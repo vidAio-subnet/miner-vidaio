@@ -15,6 +15,17 @@ honestly. The quickstart and the architecture overview are in the root
 
 ## What miners do
 
+Remote GPU backends may opt into bounded software recovery using
+`VIDAIO__MINER__REMOTE_GPU_ALLOW_CPU_FALLBACK=true` (default false).
+The worker must bind the response to the same input, track and variant and
+honestly report `cpu:ffmpeg-fallback` with GPU acceleration false. This does not
+relax deadlines, output caps, signed ingress or quality scoring. Software
+recovery uses the same CFR timestamp normalization as the scorer, not a
+frame-preserving re-timing of VFR input. It can produce different quality/size
+results; miners should test both
+tracks before enabling it. Upstream errors are logged with bounded,
+credential-redacted diagnostics.
+
 Miners transform video. The subnet (or the organic gateway, for paying customers)
 sends you a task; you return a processed file; the result is measured with real
 metrics (ffmpeg/libvmaf) and folded into your standing.
