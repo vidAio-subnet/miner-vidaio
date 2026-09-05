@@ -140,6 +140,17 @@ switch; emissions-on is the normal state.
   gateway, if you serve organic traffic). Production validators accept globally
   routable literal axon IPs; real `axon.port` is preferred over the configured fallback,
   and IPv6 literals are bracketed correctly.
+- **HTTPS on the advertised port, with a publicly trusted certificate.** Mainnet
+  validators dial every miner as `https://<axon-ip>:<axon-port>` with normal
+  certificate verification (`validator.miner_url_scheme=https` fleet-wide). A port
+  that answers plain HTTP, or presents a self-signed certificate, fails the
+  `GET /warrant` probe every round — the authority logs
+  `warrant probe failed; track stays unknown` and the miner is **skipped, never
+  dispatched to, never scored**. The certificate must be valid for the literal IP
+  you advertise (Let's Encrypt issues short-lived IP certificates; Caddy or certbot
+  can automate renewal — make the renewal hook restart the TLS edge). Verify from
+  outside the box with `curl https://<ip>:<port>/warrant` **without** `-k`; the
+  reply must be `{"track": "compression"}` or `{"track": "upscaling"}`.
 - **Serving hotkey wallet**: artifact protocol v2 signs every response. The miner role
   loads its own hotkey-only wallet through `chain.*`; `chain.validator_hotkey` and
   `miner.artifact_hotkey` must both equal the registered hotkey advertised for this
@@ -443,8 +454,11 @@ tracks. What follows is the miner-side operating contract.
   This submits the Bittensor `serve_axon` extrinsic only for metagraph discovery;
   the miner continues serving the streamed HTTP(S) protocol, not a Synapse/Axon
   application server. Axon data carries no scheme, so the argument must match every
-  validator's `miner_url_scheme`. The helper waits for finalization and exact IP/port
-  readback.
+  validator's `miner_url_scheme` — on mainnet that is `https`, verified against a
+  publicly trusted certificate for the literal IP. A port that still speaks plain
+  HTTP (a common leftover from the legacy axon) is skipped every round with
+  `warrant probe failed` and earns nothing. The helper waits for finalization and
+  exact IP/port readback.
 - **Endpoint discovery**: the adapter reads the metagraph axon IP and port. Production
   dials only globally routable literal IPs; unspecified addresses are not dialed (and are
   separately exempt from reward IP dedup). The real axon port is preserved/preferred,

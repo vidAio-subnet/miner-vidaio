@@ -33,7 +33,7 @@ tooling.
 | OS | Linux x86-64 (Ubuntu 22.04/24.04 tested) |
 | CPU box | any ffmpeg-capable machine for the reference miner |
 | GPU | only if YOUR approach needs one (e.g. learned upscaling) |
-| Network | a **publicly reachable** endpoint — global literal IP, open port, TLS |
+| Network | a **publicly reachable** endpoint — global literal IP, open port, **HTTPS with a publicly trusted certificate for that IP** (validators verify it; plain HTTP or self-signed = skipped every round) |
 | Chain | a Bittensor wallet + TAO for registration on netuid **85** |
 | Software | Python 3.12+, `ffmpeg` on PATH, Docker (recommended), `btcli` |
 
@@ -67,6 +67,14 @@ python scripts/advertise_miner.py --help
 Advertisement is **exact-readback**: the metagraph must show the same literal
 IP and port you actually serve on. Validators only dispatch to what the chain
 advertises — a NAT'd, wrong, or stale advertisement earns nothing.
+
+> **The advertised port must terminate TLS with a publicly trusted certificate.**
+> Mainnet validators dial `https://<ip>:<port>/warrant` with normal certificate
+> verification before every round. Plain HTTP or a self-signed certificate fails
+> that probe, and the miner is skipped — no requests, no score. Let's Encrypt
+> issues short-lived certificates for literal IPs (Caddy/certbot automate it).
+> Test from outside: `curl https://<ip>:<port>/warrant` with no `-k` must return
+> `{"track": "compression"}` or `{"track": "upscaling"}`.
 
 ## 5. Run the miner
 
@@ -105,6 +113,7 @@ netuid) until your endpoint scores rounds cleanly, then register on mainnet.
 | Symptom | Likely cause → fix |
 |---|---|
 | No requests ever arrive | Endpoint not reachable or not advertised: test `curl https://<ip>:<port>/health` from OUTSIDE; re-run `advertise_miner.py` and confirm exact readback |
+| Skipped every round: `warrant probe failed; track stays unknown` | The advertised port is not serving verifiable HTTPS: plain HTTP (`tlsv1 alert protocol version`) or a self-signed/expired certificate. Terminate TLS with a publicly trusted certificate for the literal IP, then confirm `curl https://<ip>:<port>/warrant` (no `-k`) from outside |
 | TLS handshake failures in validator logs | Expired/self-signed cert: renew, and make the renewal hook RESTART your TLS edge, not reload it |
 | `401`/`403` on requests you send | Your hotkey is not registered / lost registration (deregistered by churn) — check the metagraph; re-register |
 | Signature refused (`replay`, `timestamp`) | Clock skew: NTP-sync the box (the signed-request window is ±120 s); never resend the same nonce |
