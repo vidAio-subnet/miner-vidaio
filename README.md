@@ -142,3 +142,7 @@ upgrades; the `vidaio/autoupdater` package documents the update contract.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Whitepaper
+
+[Vidaio Whitepaper v1.0 (PDF)](docs/vidaio-whitepaper.pdf) — the mechanism design: measurement, continuous scoring, competitions, anchored epoch logs and independent audit, payout mechanics.
