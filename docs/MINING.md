@@ -78,12 +78,56 @@ levers and their locked values in [`config/default.yaml`](../config/default.yaml
 - The **retention lever was removed for v1** (owner decision): there is no longer
   any multiplier for holding vs liquidating emitted alpha. The graded top-5 curve is
   based only on rank, with no retention reshaping. `burn_proportion` stays locked at 0.
-- **Buying stake buys you nothing**: `alpha_stake_weigh_factor` is locked at 0
-  and has no implementation as a weight term anywhere.
+- Stake never increases the size of a reward: `alpha_stake_weigh_factor` is locked
+  at 0. Schema v17 adds an optional inference eligibility floor,
+  `tokenomics.payout_min_alpha_stake`, disabled by default (`0.0`).
 - Selection dedups by IP and coldkey (lowest uid wins) — running clones of one
   operation on one box or one coldkey does not multiply slots.
 - Any fixed track/podium/crown share with no eligible recipient is sent to the
   canonical sink/burn UID. It is not renormalized into another miner's pool.
+
+### Distinct-content inference payouts (schema v17; ACTIVE on mainnet since epoch 24978, 2026-09-07 11:40 UTC)
+
+**Identical outputs share one scoring slot; differentiate your output to earn.**
+This also applies to honest miners running the same deterministic reference encoder
+on separate coldkeys and hosts. It is a content rule, not an accusation about ownership.
+The rule has been active on mainnet (netuid 85) since epoch 24978 (2026-09-07 11:40 UTC).
+It supersedes the older byte-exact-only dedup for economic purposes; the exact-byte path
+still exists as the first, trivial tier of the same check.
+
+For each ordinary challenge and track, the scorer hashes the entire canonical Y4M
+video it measured (the decoded, canonicalized stream, not the container bytes) and
+records 32 frame fingerprints: frames sampled at positions floor(i·(N−1)/31) for
+i = 0..31, each area-resized to 32×32 luma, transformed by an 8×8 DCT and reduced to a
+64-bit perceptual hash (`content_fingerprint/1`). VMAF and compression rate play NO
+part in this comparison. Two eligible outputs match when their canonical SHA-256
+digests match, or when both conditions hold:
+
+- At least 30 of 32 corresponding fingerprints differ by at most 6 bits.
+- Encoded sizes differ by at most 1% of the larger file.
+
+Connected matches form a group, including indirect matches through another output.
+The winner is the minimum of the existing block-hash/hotkey ordering, using the
+authenticated challenge anchor fixed before dispatch. Every other member receives
+an archived `DUPLICATE_CONTENT` zero for that round. This zero enters the ordinary
+EWMA; it does not instantly erase an existing accumulator. Changing container tags
+or adding imperceptible noise is not a reliable way to obtain another slot. Materially
+different encodes can earn separately when they do not satisfy the matching rule.
+
+Only successfully measured, gate-passing outputs with a positive score and complete
+signed archive evidence are considered. A gate-passed zero (for example VMAF below the
+threshold) keeps its own zero and never claims a group's slot or suppresses positive
+outputs. If the authority cannot verify or archive a component's evidence before
+publication, it skips that component without a zero or a score fold. Auditors independently decode the archived
+outputs, reconstruct the complete declared scored roster and groups, and verify the
+salted winner. The existing exact-byte duplicate path remains in force.
+
+The optional alpha floor uses stake at the epoch's exact close block, before inference
+IP/coldkey selection. Eligible miners retain the usual rank curve; a track with no
+eligible miners sends its allocation to the canonical sink. Competition podium
+awards are unchanged. The top-five curve, score floor, EWMA and
+pool percentages above remain unchanged. Audit disagreements remain report-only under
+the project design record; they do not automatically suppress authority weights.
 
 ### The competition track (the breakthrough crown)
 
@@ -317,11 +361,15 @@ machine-readable reason code recorded in the audit packet:
   the **miner input** as their reference, so the gate measures what the miner added
   rather than transformations already present in its challenge payload. The 3.0
   threshold is a calibrated constant, measured against the real degradation space.
-- **Dedup**: byte-identical outputs across miners (exact verified SHA-256 digest)
-  use the finalized challenge-anchor
-  hash plus miner hotkey under `anchor_hash_hotkey/1`; arrival timing cannot choose
-  the winner. A loser is zeroed `REPLAY_DUPLICATE` only with both signed receipts,
-  outputs and the content-addressed duplicate witness available to auditors.
+- **Dedup (two tiers)**: (1) byte-identical outputs across miners (exact verified
+  SHA-256 digest) → `REPLAY_DUPLICATE`; (2) same-content outputs under
+  `canonical_content/1` — identical canonical-stream digest, or ≥30 of 32 sampled
+  frame fingerprints within 6 bits AND encoded sizes within 1% of the larger file →
+  `DUPLICATE_CONTENT` (see "Distinct-content inference payouts" above). In both tiers
+  the single paid winner of a duplicate group is the minimum of the finalized
+  challenge-anchor hash salted with each miner hotkey (`anchor_hash_hotkey/1`);
+  arrival timing, UID and the validator cannot choose the winner. Losers are zeroed
+  only with the signed receipts, outputs and the content witness available to auditors.
 - **Non-finite / missing metrics**: fail closed — `METRIC_MISSING` /
   `METRIC_NON_FINITE`, never a silent pass.
 - **Stream validity**: frame count, duration, dimensions, PTS consistency
