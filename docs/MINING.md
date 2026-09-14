@@ -44,9 +44,21 @@ a private per-validator sampling any more.
 **Two pools, one pool per hotkey identity.** The subnet runs two tracks:
 
 - **compression** — re-encode the input smaller (byte ratio must shrink ≥ 1.25×)
-  while keeping VMAF against the pristine reference above the threshold;
+  while keeping VMAF against the **served input** above the threshold. The quality
+  term and the floor are measured against the exact file you received, so the VMAF
+  you compute locally (libvmaf `vmaf_v0.6.1`, same canonicalization) is the VMAF
+  you are scored on; the sealed-reference number is still published in every packet
+  as `metrics.vmaf_pristine` for audit;
 - **upscaling** — upscale the degraded input (discrete factors 2× / 4×), scored
   on PieAPP quality + content length under per-factor file-size caps.
+
+**Inputs are per-challenge variants of the source.** Since `dag_version 8` the sealed
+reference itself is a seed-drawn transform of the original clip (horizontal flip or
+not, a small crop on every side, mild gamma/saturation/hue shifts and light seeded
+grain), and the input you receive derives from that reference. Your output must match
+the served input's geometry exactly (`target_width`/`target_height` in the task params);
+there is no public original that scores — a clip found online is the wrong
+geometry and colour, and the source-proximity check (below) still applies.
 
 A miner identity competes in exactly ONE pool, declared by the **TaskWarrant**:
 the validator probes `GET /warrant` and buckets every score for your hotkey
@@ -100,19 +112,28 @@ video it measured (the decoded, canonicalized stream, not the container bytes) a
 records 32 frame fingerprints: frames sampled at positions floor(i·(N−1)/31) for
 i = 0..31, each area-resized to 32×32 luma, transformed by an 8×8 DCT and reduced to a
 64-bit perceptual hash (`content_fingerprint/1`). VMAF and compression rate play NO
-part in this comparison. Two eligible outputs match when their canonical SHA-256
-digests match, or when both conditions hold:
+part in this comparison. Two eligible outputs match only when their canonical SHA-256
+digests are identical under the same canonicalization plan (`canonical_content/3`,
+`exact_canonical_digest/1`). Fingerprints and encoded sizes are still recorded in the
+evidence but no longer create a match on their own.
 
-- At least 30 of 32 corresponding fingerprints differ by at most 6 bits.
-- Encoded sizes differ by at most 1% of the larger file.
+Rounds finalized under the earlier rules keep them and are verified under them:
+`canonical_content/1` also matched ≥30 of 32 fingerprints within 6 bits AND encoded sizes
+within 1% of the larger file; `canonical_content/2` used the same fingerprint test with a
+0.2% size band.
 
 Connected matches form a group, including indirect matches through another output.
-The winner is the minimum of the existing block-hash/hotkey ordering, using the
-authenticated challenge anchor fixed before dispatch. Every other member receives
-an archived `DUPLICATE_CONTENT` zero for that round. This zero enters the ordinary
-EWMA; it does not instantly erase an existing accumulator. Changing container tags
-or adding imperceptible noise is not a reliable way to obtain another slot. Materially
-different encodes can earn separately when they do not satisfy the matching rule.
+The reference member is the minimum of the existing block-hash/hotkey ordering, using
+the authenticated challenge anchor fixed before dispatch. Its measured score is divided
+equally among all members of the group (`equal_share/1`): every member, the reference
+included, receives `winner_score / n` for that round as an archived
+`validator-content-duplicate/4` share packet; non-reference members carry the
+`DUPLICATE_CONTENT` reason with the share as their score. The group as a whole earns
+exactly one measurement, so copying an output is never better than producing a distinct
+one. The share enters the ordinary EWMA; it does not instantly erase an existing
+accumulator. Changing container tags or adding imperceptible noise is not a reliable way
+to obtain another slot. Materially different encodes can earn separately when they do
+not satisfy the matching rule.
 
 Only successfully measured, gate-passing outputs with a positive score and complete
 signed archive evidence are considered. A gate-passed zero (for example VMAF below the
@@ -120,7 +141,8 @@ threshold) keeps its own zero and never claims a group's slot or suppresses posi
 outputs. If the authority cannot verify or archive a component's evidence before
 publication, it skips that component without a zero or a score fold. Auditors independently decode the archived
 outputs, reconstruct the complete declared scored roster and groups, and verify the
-salted winner. The existing exact-byte duplicate path remains in force.
+salted reference member and every share against its archived measurement. The existing
+exact-byte duplicate path remains in force.
 
 The optional alpha floor uses stake at the epoch's exact close block, before inference
 IP/coldkey selection. Eligible miners retain the usual rank curve; a track with no
@@ -363,13 +385,29 @@ machine-readable reason code recorded in the audit packet:
   threshold is a calibrated constant, measured against the real degradation space.
 - **Dedup (two tiers)**: (1) byte-identical outputs across miners (exact verified
   SHA-256 digest) → `REPLAY_DUPLICATE`; (2) same-content outputs under
-  `canonical_content/1` — identical canonical-stream digest, or ≥30 of 32 sampled
-  frame fingerprints within 6 bits AND encoded sizes within 1% of the larger file →
-  `DUPLICATE_CONTENT` (see "Distinct-content inference payouts" above). In both tiers
-  the single paid winner of a duplicate group is the minimum of the finalized
-  challenge-anchor hash salted with each miner hotkey (`anchor_hash_hotkey/1`);
-  arrival timing, UID and the validator cannot choose the winner. Losers are zeroed
-  only with the signed receipts, outputs and the content witness available to auditors.
+  `canonical_content/3` — identical canonical-stream digest under the same
+  canonicalization plan (the earlier `canonical_content/1` and `/2` rules also matched
+  ≥30 of 32 sampled frame fingerprints within 6 bits AND encoded sizes within 1% or
+  0.2% of the larger file, and rounds finalized under them are verified under them) →
+  `DUPLICATE_CONTENT` (see "Distinct-content inference payouts" above). In the
+  exact-byte tier the single paid winner of a duplicate group is the minimum of the
+  finalized challenge-anchor hash salted with each miner hotkey (`anchor_hash_hotkey/1`);
+  in the same-content tier that minimum is the reference member whose measured score is
+  split equally among all members (`equal_share/1`). Arrival timing, UID and the
+  validator cannot choose the reference; shares and zeros are minted only with the signed
+  receipts, outputs and the content witness available to auditors.
+- **Source proximity** (compression, decided per round, not per item): every measured
+  packet publishes `vmaf_residual` = VMAF(output, pristine) − VMAF(output, input) and
+  `chroma_residual` = PSNR_UV(output, pristine) − PSNR_UV(output, input) (mean per-frame
+  U/V-plane PSNR on the canonical streams). An output whose residuals BOTH sit above the
+  round medians by the fixed margins (+0.25 VMAF and +0.10 dB chroma) while its absolute
+  `vmaf_residual` is positive is closer to the sealed pristine reference than to the
+  input it was served — the signature of an encode made from the pristine — and is
+  zeroed with `SOURCE_PROXIMITY`. The decision needs at least three measured outputs in
+  the round, is relative to the round (clip effects shift everyone), and is minted only
+  with a canonical roster witness (`validator-source-proximity/1`) that auditors
+  re-derive from the archived original packets and the released media. Encoding the
+  served input — however aggressively — keeps both residuals at or below the population.
 - **Non-finite / missing metrics**: fail closed — `METRIC_MISSING` /
   `METRIC_NON_FINITE`, never a silent pass.
 - **Stream validity**: frame count, duration, dimensions, PTS consistency
