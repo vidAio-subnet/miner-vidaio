@@ -82,7 +82,7 @@ levers and their locked values in [`config/default.yaml`](../config/default.yaml
   0.2 upscaling** split; neither track inherits the other's unused allocation.
 - Within a track, the **top 5** miners by accumulated score take a graded
   `5:4:3:2:1` rank curve; #1 earns five times #5, and rank 6+ takes nothing
-  (`top_n_per_track: 5`). Scores below the absolute `minimum_payout_score: 0.10`
+  (`top_n_per_track: 5`). Scores below the absolute `minimum_payout_score: 0.05`
   earn zero even when fewer than five miners serve the track.
 - Your standing is an **EWMA** of round scores: `new = 0.75·old + 0.25·score`
   (`ewma_decay: 0.75`). One great round doesn't crown you; one bad round
