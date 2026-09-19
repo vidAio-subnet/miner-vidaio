@@ -412,6 +412,11 @@ override `VIDAIO__MINER__<KEY>`):
 
 ### How scoring works against you — what gets you zeroed
 
+**Submit a real, self-contained video file.** The scorer opens submissions only as
+Matroska/WebM, MP4/MOV-family or IVF, over the local-file protocol only. Anything else —
+playlists and manifests (ffconcat, HLS, DASH), NUT, AVI, MPEG-TS, image sequences, files
+that reference other files — fails to open and the item scores zero.
+
 Scoring engine: [`vidaio/scoring/README.md`](../vidaio/scoring/README.md).
 Validity gates run FIRST and are absolute — any failure forces score 0 with a
 machine-readable reason code recorded in the audit packet:
