@@ -172,19 +172,65 @@ Dockerfile into an image honoring the run contract:
 ```
 
 one output per input under the same digest-named filename, plain regular files
-only, exit 0. Evaluation runs in an isolated Docker sandbox: `--network none`,
-read-only rootfs, no secrets, bounded output — your code sees inputs and writes
-outputs, nothing else. Enrollment is phase- and deadline-gated with an
-alpha-stake gate, driven through the orchestrator's token-authed control API
-(`POST /competitions/{id}/contenders`); a public self-serve enrollment surface
-is [NOT BUILT] — enrollment is operator-approved today. The enrolling hotkey
-signs its own request (see the registered-hotkey auth requirement below), and
-enrollment requests are coordinated through the VidAIO Discord — the invite is
-in the root [README](../README.md).
+only, exit 0. Evaluation runs in an isolated sandbox: no network, read-only root
+filesystem, no secrets, bounded output — your code sees inputs and writes outputs,
+nothing else. Builds do have network access; runs never do.
+
+**What is fixed before you enroll.** Every competition is described by a manifest whose
+digest is anchored on chain *before* enrollment opens, and the manifest is public. It
+carries: the four lifecycle times, the enrollment stake floor, the quality gate
+(`vmaf_threshold`), the compute envelope every contender gets
+(`sandbox_resources`: CPUs, memory, and `batch_timeout_seconds` — with a batch size of
+one that is your per-clip time budget — plus `allowed_gpus`), the result rules
+(`result_rules`, below), the archived baseline you are compared against, and — for both
+tracks — the ordered **commitments to the hidden clips** (`evaluation_item_commitments`).
+The clips themselves stay sealed until evaluation; the commitments let anyone prove
+afterwards exactly which clips were used and that none was swapped.
+
+**Score.** Each clip is scored with the same public compression formula as inference
+(`min(1, (0.7·(1 − rate) + 0.3·VMAF/100) / 1.12)`, zero below the VMAF gate or on a
+frame-count/geometry mismatch). Your competition score is the **plain mean of your
+per-clip scores**; ranking is by that mean with a stable hotkey/uid tie-break. Human
+review can flag a contender for investigation but never changes a payout.
+
+**Entering.** Enrollment is self-serve and signed:
+
+```
+python scripts/competition_enroll.py list   --url https://<competitions-host>
+python scripts/competition_enroll.py enroll --url https://<competitions-host> \
+    --competition-id <id> --repo-url https://github.com/you/solution.git \
+    --commit <commit sha> --tree <tree sha> \
+    --wallet-name <coldkey name> --wallet-hotkey <hotkey name>
+```
+
+The request body is only `{repo_url, commit_sha, tree_sha}` and is signed with your
+**hotkey** (your coldkey is never used). The validator verifies the signature, that the
+hotkey is registered on the subnet, and that its alpha stake — read from the chain, not
+from your request — clears the floor. One submission per hotkey per competition. The
+host and the schedule of each competition are announced in the VidAIO Discord (invite in
+the root [README](../README.md)); `list` shows every manifest, floor and allowed
+repository host. A private repository works when the competition's read-only reader
+account has been granted access to it; the account name is announced with the
+competition. Git LFS and submodules are not supported.
+
+**Try it first.** `examples/competition_contenders/` ships two contender families you
+can copy: the GPU template, and `cpu_compression/` (x264, x265, VP9, SVT-AV1 fixed and a
+quality-searching SVT-AV1) with `materialize_cpu.py`. The header of
+`cpu_compression/run.sh` states the full run contract; you can run it locally against
+any folder of sha256-named clips before you enroll.
+
+**Result rules.** A competition may publish its own `result_rules` in the anchored
+manifest: `crown_margin` (the relative win over the rerun baseline that makes the result
+a CROWN), `crown_min_score` (an absolute score the winner must also reach to crown),
+and `podium_min_margin` / `podium_min_score` (what a contender must reach to hold a paid
+rank at all). They are identical for every contender, fixed before enrollment, copied
+into the epoch evidence and re-checked by auditors against the anchored manifest. When
+the block is absent the protocol default applies (crown at an inclusive 5% margin, every
+ranked contender eligible for the podium).
 
 Competition payouts use the latest globally applied result for seven days. A result
-below the inclusive 5% breakthrough floor opens a **PODIUM** window: inference receives
-60% and the competition podium receives 40%. A result at or above the floor opens a
+that does not meet the crown rule opens a **PODIUM** window: inference receives
+60% and the competition podium receives 40%. A result that meets it opens a
 **CROWN** window: inference receives 10% and the competition podium receives 90%.
 Within either competition pool the first three places receive 70/20/10; a missing or
 deregistered rank is sent to the canonical chain sink rather than redistributed. The
