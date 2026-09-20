@@ -219,6 +219,23 @@ quality-searching SVT-AV1) with `materialize_cpu.py`. The header of
 `cpu_compression/run.sh` states the full run contract; you can run it locally against
 any folder of sha256-named clips before you enroll.
 
+**What your code may do.** Anything that fits the contract and the compute envelope.
+Analysing each input and choosing the encoder, preset, filters or GPU path per clip,
+encoding several candidates and keeping the best, and measuring VMAF yourself to search
+for the smallest file that clears the gate are all allowed and expected; clips differ a
+lot (live action, animation, AI-generated footage, film grain, screen recordings), so a
+single fixed setting will do badly somewhere. Everything you need must be inside the
+image: a run has no network.
+
+**Two things that cost real entries a clip.** (1) Check your encoder on odd frame sizes.
+Distribution packages can be old: the SVT-AV1 1.7 shipped with Ubuntu 24.04 crashes on
+frame widths that are not a multiple of 8, and that ffmpeg has no `libvmaf` filter, so a
+quality search silently degrades to a fixed setting. The example image installs a current
+static ffmpeg build instead and fails the *build* when a needed encoder or filter is
+missing. (2) Leave a margin above the VMAF gate. The scorer measures the full clip with
+its own pinned libvmaf build and model; your measurement can differ by a few tenths, and
+a clip below the gate scores zero.
+
 **Result rules.** A competition may publish its own `result_rules` in the anchored
 manifest: `crown_margin` (the relative win over the rerun baseline that makes the result
 a CROWN), `crown_min_score` (an absolute score the winner must also reach to crown),
