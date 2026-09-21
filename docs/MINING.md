@@ -180,8 +180,8 @@ nothing else. Builds do have network access; runs never do.
 digest is anchored on chain *before* enrollment opens, and the manifest is public. It
 carries: the four lifecycle times, the enrollment stake floor, the quality gate
 (`vmaf_threshold`), the compute envelope every contender gets
-(`sandbox_resources`: CPUs, memory, and `batch_timeout_seconds` — with a batch size of
-one that is your per-clip time budget — plus `allowed_gpus`), the result rules
+(`sandbox_resources`: CPUs, memory, and `batch_timeout_seconds`, plus `allowed_gpus`;
+see "Time and disk limits" below), the result rules
 (`result_rules`, below), the archived baseline you are compared against, and — for both
 tracks — the ordered **commitments to the hidden clips** (`evaluation_item_commitments`).
 The clips themselves stay sealed until evaluation; the commitments let anyone prove
@@ -209,15 +209,87 @@ hotkey is registered on the subnet, and that its alpha stake — read from the c
 from your request — clears the floor. One submission per hotkey per competition. The
 host and the schedule of each competition are announced in the VidAIO Discord (invite in
 the root [README](../README.md)); `list` shows every manifest, floor and allowed
-repository host. A private repository works when the competition's read-only reader
-account has been granted access to it; the account name is announced with the
-competition. Git LFS and submodules are not supported.
+repository host. Git LFS and submodules are not supported.
+
+**Use a private repository.** Enrollment names a repository, a commit and a tree; it does
+not prove who wrote the code. Anything in a public repository can be copied, or even
+enrolled as-is by someone else, before the deadline. To let the evaluator read a private
+GitHub repository, add the machine user **`sn85competitionreader-collab`** under
+Settings → Collaborators. It is an ordinary account, not a GitHub App, and invitations
+are accepted automatically within a few minutes. GitHub only offers write access for
+collaborators on personal repositories; the reader never pushes, it fetches exactly the
+commit you enrolled (once for the sealed archive, once for the build). If you want strict
+read-only access, keep the repository in a free GitHub organization and add the reader as
+an outside collaborator with the Read role. Keep the reader invited until the builds are
+announced as done; an entry whose repository cannot be fetched cannot be evaluated.
+Evaluation is pinned to the enrolled commit and tree, so later pushes change nothing, and
+an enrollment cannot be edited: check the commit before you send it
+(`git rev-parse <commit>^{tree}` prints the tree SHA).
 
 **Try it first.** `examples/competition_contenders/` ships two contender families you
 can copy: the GPU template, and `cpu_compression/` (x264, x265, VP9, SVT-AV1 fixed and a
 quality-searching SVT-AV1) with `materialize_cpu.py`. The header of
 `cpu_compression/run.sh` states the full run contract; you can run it locally against
 any folder of sha256-named clips before you enroll.
+
+**Practice clips and past data.** A public practice pack (eight lossless clips: AI-generated,
+animation, screen recording, archive film and space footage, with odd frame sizes and frame
+rates) is attached to the
+[`practice-pack-001` release](https://github.com/vidAio-subnet/miner-vidaio/releases/tag/practice-pack-001)
+of the public miner repository. It is similar in kind to competition content but shares no
+clip with any hidden set. Every inference clip the validator has scored is public as well,
+with each miner output, the released pristine source and the full score packet, in the
+evidence bucket `https://vidaio-sn85-evidence.s3.eu-central-1.amazonaws.com` (anonymous
+read, no listing). Start from `finalized/epoch=<N>/log.json` (first epoch 24920; epoch `N`
+closes at block `8994622 + 360 * (N - 24920)`), follow `audit_manifest.per_uid` to each
+`audit_bundle/<aa>/<bb>/<digest>`, and the bundle names the `challenge_input`,
+`miner_output`, `released/reference_original` and `score_packet` objects under the same
+`<kind>/<aa>/<bb>/<digest>` layout.
+
+**Checklist: what loses you a clip, a batch or the whole entry.** Every limit below is
+enforced by code, the same for everyone, and an enrollment cannot be edited afterwards.
+
+*The whole entry is lost when:*
+- the repository cannot be fetched after the deadline (reader not invited, repository deleted
+  or renamed, commit not pushed), or the fetched commit/tree does not match what you enrolled;
+- the tree contains `.gitmodules`, symlinks or special files, or is larger than 512 MiB. Keep
+  large weights out of Git: download them in the Dockerfile (builds have network) and verify a
+  checksum;
+- the image does not build. `Dockerfile` must be at the repository root and build for
+  linux/amd64 within 30 minutes; the image may be at most the manifest's
+  `container_size_limit_gb`. Prefer prebuilt encoder binaries to compiling from source;
+- the image has no `/bin/sh` or no `/app/run.sh`. Your `ENTRYPOINT`/`CMD` are ignored, no
+  environment variable is injected, there is no network at run time, and every call runs in a
+  fresh sandbox: nothing you write survives from one batch to the next.
+
+*A whole batch scores zero when:*
+- `run.sh` runs longer than `batch_timeout_seconds`. That budget bounds ONE whole `run.sh`
+  call, and one call receives `evaluation_batch_size` clips (five clips per call when the
+  manifest says 5). It is wall-clock time and includes any quality measurement you run
+  yourself, so keep a margin and track elapsed time inside the script;
+- `run.sh` exits non-zero. Do not let one failing clip abort the script (`set -e` does exactly
+  that): catch the failure and fall back to a safe encode for that clip;
+- the output directory exceeds 512 MiB for one file or 2 GiB in total **at any moment of the
+  run**, temporary files included, or holds more than 4096 entries. Work under `/tmp` and
+  delete temporary files. The local Docker runner used for self-testing caps `/tmp` at 256 MB,
+  so prefer pipes to large intermediate files;
+- stdout plus stderr exceed 8 MiB. Run encoders with `-loglevel error` or redirect their logs;
+- an output is a symlink or anything other than a plain regular file.
+
+*One clip scores zero when:*
+- its output is missing, empty, or not named exactly like the input. Inputs are named by their
+  sha256 and have **no file extension**, so tell your tools the container explicitly
+  (`-f mp4`) and let them probe the input format;
+- the codec is not H.264, HEVC, VP9 or AV1 (nothing else is accepted, whatever the decoder
+  could read);
+- width, height or the number of frames differ from the input, the duration differs by more
+  than 5 %, or the timestamps are inconsistent. Do not resample the frame rate: clips come at
+  24, 29.97, 30 fps and others, with frame sizes that are not always a multiple of 8 or 16.
+  Pad internally if your encoder needs it, but the decoded output must have the input's size;
+- mean VMAF (`vmaf_v0.6.1`, whole clip, against the input you received) is below the
+  manifest's `vmaf_threshold`. A second VMAF model and chroma/tone checks run as well:
+  sharpening, contrast or colour tricks that inflate VMAF zero the clip.
+Outputs are compared after conversion to 8-bit 4:2:0, so 10-bit encodes are fine.
 
 **What your code may do.** Anything that fits the contract and the compute envelope.
 Analysing each input and choosing the encoder, preset, filters or GPU path per clip,
