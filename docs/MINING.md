@@ -316,6 +316,9 @@ rank at all). They are identical for every contender, fixed before enrollment, c
 into the epoch evidence and re-checked by auditors against the anchored manifest. When
 the block is absent the protocol default applies (crown at an inclusive 5% margin, every
 ranked contender eligible for the podium).
+If the rerun baseline scores zero on the hidden clips, the relative margins cannot
+discriminate and the absolute bars decide alone: `crown_min_score` for a CROWN and
+`podium_min_score` for a paid rank.
 
 Competition payouts use the latest globally applied result for seven days. A result
 that does not meet the crown rule opens a **PODIUM** window: inference receives
