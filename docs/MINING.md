@@ -159,7 +159,7 @@ the project design record; they do not automatically suppress authority weights.
 > eligibility, and review preferences do not affect payout. A CPU-only auditor opens the
 > corresponding audit bundles and independently rebuilds the result, crown, and weights.
 
-Besides always-on inference mining, there are compression and upscaling
+Besides always-on inference mining, there are compression, upscaling and object-removal
 **competitions**:
 sealed-sandbox code submissions evaluated against held-out content
 ([`vidaio/competition/README.md`](../vidaio/competition/README.md)). A contender
@@ -182,8 +182,9 @@ carries: the four lifecycle times, the enrollment stake floor, the quality gate
 (`vmaf_threshold`), the compute envelope every contender gets
 (`sandbox_resources`: CPUs, memory, and `batch_timeout_seconds`, plus `allowed_gpus`;
 see "Time and disk limits" below), the result rules
-(`result_rules`, below), the archived baseline you are compared against, and — for both
-tracks — the ordered **commitments to the hidden clips** (`evaluation_item_commitments`).
+(`result_rules`, below), the archived baseline you are compared against (a competition
+may have none: then only its absolute score bars decide), and the ordered **commitments
+to the hidden clips** (`evaluation_item_commitments`).
 The clips themselves stay sealed until evaluation; the commitments let anyone prove
 afterwards exactly which clips were used and that none was swapped.
 
@@ -258,6 +259,15 @@ enforced by code, the same for everyone, and an enrollment cannot be edited afte
 - the image does not build. `Dockerfile` must be at the repository root and build for
   linux/amd64 within 30 minutes; the image may be at most the manifest's
   `container_size_limit_gb`. Prefer prebuilt encoder binaries to compiling from source;
+- the Dockerfile uses something the sandbox builder does not support. The builder is not
+  Docker/BuildKit: `ADD` is rejected (use `COPY`, or download inside a `RUN`), `USER` is
+  ignored, and an image reference in `FROM` or `COPY --from` must carry a tag **or** a
+  digest, never both (`name:tag@sha256:...` fails with "Docker references with both a tag
+  and digest are currently not supported"; `name@sha256:...` works). A build that passes
+  locally can still fail here, so keep the Dockerfile to plain `FROM`/`COPY`/`RUN`/`ENV`/
+  `WORKDIR` and test it against these rules before pinning your commit
+  (`python scripts/competition_precheck.py <repo> --commit <sha>` checks the exact commit
+  you are about to enroll against all the entry-losing rules in this list);
 - the image has no `/bin/sh` or no `/app/run.sh`. Your `ENTRYPOINT`/`CMD` are ignored, no
   environment variable is injected, there is no network at run time, and every call runs in a
   fresh sandbox: nothing you write survives from one batch to the next.
@@ -308,6 +318,39 @@ missing. (2) Leave a margin above the VMAF gate. The scorer measures the full cl
 its own pinned libvmaf build and model; your measurement can differ by a few tenths, and
 a clip below the gate scores zero.
 
+**Object-removal competitions (track `removal`).** The contract above is unchanged
+(same `run.sh`, same limits); only the items and the score differ.
+- *Input:* each item is ONE Matroska file (named by its sha256, no extension) with two
+  video streams. Stream 0 is the clip with an object in it (FFV1, 4:2:0, at most
+  1280×720, constant frame rate). Stream 1 is the per-frame mask (FFV1 gray, same size
+  and frame count; luma above 127 marks the pixels to reconstruct). Read them with
+  `-map 0:v:0` and `-map 0:v:1`. Masks are object-shaped and change from frame to frame;
+  a frame whose mask is empty (the object is out of view) must come back unchanged.
+- *Output:* one MP4 per item with a single H.264, HEVC, VP9 or AV1 stream of the same
+  width, height, frame count and frame rate. Pixels outside the mask must stay what you
+  received: the largest per-frame mean absolute RGB change outside the mask must not
+  exceed 3.0, so encode losslessly (`libx264 -qp 0`) or near-losslessly (all-intra
+  `-crf 8`), and paste your model's result back inside the mask only. Output size is not
+  scored, but the 512 MiB / 2 GiB caps still apply.
+- *Score:* only the masked region is measured, against the clean original (sealed during
+  the competition, published afterwards). The validator first computes a free fill of
+  its own (per-pixel temporal median of the unmasked frames, Telea inpainting where the
+  background is never visible). An item scores zero when your region PSNR is not at
+  least 1.5 dB above that free fill, when your region flickers (temporal warp error above
+  5× the original's), when pixels outside the mask changed, or on a size/frame-count
+  mismatch. Otherwise it scores `0.6 · min(1, (PSNR − free-fill PSNR) / 8 dB) +
+  0.4 · (free-fill LPIPS − LPIPS) / free-fill LPIPS` (clamped to [0, 1]). The code is
+  `vidaio/scoring/removal.py`.
+- *Content:* the hidden items mix difficulty levels: static objects, moving objects the
+  mask follows, objects that leave the frame (or vanish) and come back, and hard cases
+  (large, fast, zooming or several objects). The clean background is often visible in
+  other frames, so methods that propagate real pixels across time (flow-guided video
+  inpainting) do far better than inpainting each frame on its own; check the licence of
+  any model you ship.
+- *Start from* `examples/competition_contenders/removal_example/`: a complete CPU entry
+  that implements the contract (it is the free fill, so it scores about zero) with a
+  local self-test.
+
 **Result rules.** A competition may publish its own `result_rules` in the anchored
 manifest: `crown_margin` (the relative win over the rerun baseline that makes the result
 a CROWN), `crown_min_score` (an absolute score the winner must also reach to crown),
@@ -318,15 +361,23 @@ the block is absent the protocol default applies (crown at an inclusive 5% margi
 ranked contender eligible for the podium).
 If the rerun baseline scores zero on the hidden clips, the relative margins cannot
 discriminate and the absolute bars decide alone: `crown_min_score` for a CROWN and
-`podium_min_score` for a paid rank.
+`podium_min_score` for a paid rank. A competition may also be announced **without a
+baseline** (its manifest has no `baseline` block): it must then anchor both
+`crown_min_score` and `podium_min_score`, and those two numbers decide on their own —
+reach `podium_min_score` to hold a paid place, and the first place crowns when it also
+reaches `crown_min_score`.
 
-Competition payouts use the latest globally applied result for seven days. A result
-that does not meet the crown rule opens a **PODIUM** window: inference receives
-60% and the competition podium receives 40%. A result that meets it opens a
-**CROWN** window: inference receives 10% and the competition podium receives 90%.
-Within either competition pool the first three places receive 70/20/10; a missing or
-deregistered rank is sent to the canonical chain sink rather than redistributed. The
-executable comparison floor is the archived baseline rerun on the same hidden matrix.
+Competition payouts use the latest globally applied result for seven days (a newer
+result replaces it). Since tokenomics v3 (2026-09-27) inference earns nothing and a
+result pays **100 % of miner emissions** by default: a result that does not meet the
+crown rule opens a **PODIUM** window whose pot is split 50/24/13/8/5 over the top five
+qualifying places; a result that meets it opens a **CROWN** window split 90/4/3/2/1.
+Unfilled places go to the filled ones in proportion; a result with no qualifying
+contender closes the window and the subnet burns until the next result; a deregistered
+paid hotkey sends its share to the sink. Every competition anchors these values in its
+manifest (`result_rules`), so check the manifest of the competition you enter: the pot
+and the split may differ from the defaults. When a competition has a baseline, the
+executable comparison floor is that archived baseline rerun on the same hidden matrix.
 Every contender uses the same enrollment, scoring, audit, and payout path.
 `tokenomics.competition_emissions_enabled` is retained only as an emergency off
 switch; emissions-on is the normal state.
