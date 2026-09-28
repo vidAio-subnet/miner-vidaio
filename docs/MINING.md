@@ -333,14 +333,16 @@ a clip below the gate scores zero.
   `-crf 8`), and paste your model's result back inside the mask only. Output size is not
   scored, but the 512 MiB / 2 GiB caps still apply.
 - *Score:* only the masked region is measured, against the clean original (sealed during
-  the competition, published afterwards). The validator first computes a free fill of
-  its own (per-pixel temporal median of the unmasked frames, Telea inpainting where the
-  background is never visible). An item scores zero when your region PSNR is not at
-  least 1.5 dB above that free fill, when your region flickers (temporal warp error above
-  5× the original's), when pixels outside the mask changed, or on a size/frame-count
-  mismatch. Otherwise it scores `0.6 · min(1, (PSNR − free-fill PSNR) / 8 dB) +
-  0.4 · (free-fill LPIPS − LPIPS) / free-fill LPIPS` (clamped to [0, 1]). The code is
-  `vidaio/scoring/removal.py`.
+  the competition, published afterwards). The validator first measures two free
+  answers: its own fill (per-pixel temporal median of the unmasked frames, Telea
+  inpainting where the background is never visible) and the clip returned unchanged. The
+  floor is the better of the two on each metric (higher PSNR, lower LPIPS), so doing
+  nothing never scores. An item scores zero when your region PSNR is not at least 1.5 dB
+  above that floor, when your region flickers (temporal warp error above 5× the
+  original's), when pixels outside the mask changed, or on a size/frame-count mismatch.
+  Otherwise it scores `0.6 · min(1, (PSNR − floor PSNR) / 8 dB) +
+  0.4 · (floor LPIPS − LPIPS) / floor LPIPS` (clamped to [0, 1]). The code is
+  `vidaio/scoring/removal.py` and `vidaio/scoring_worker/removal_backend.py`.
 - *Content:* the hidden items mix difficulty levels: static objects, moving objects the
   mask follows, objects that leave the frame (or vanish) and come back, and hard cases
   (large, fast, zooming or several objects). The clean background is often visible in
