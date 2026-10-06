@@ -159,8 +159,8 @@ the project design record; they do not automatically suppress authority weights.
 > eligibility, and review preferences do not affect payout. A CPU-only auditor opens the
 > corresponding audit bundles and independently rebuilds the result, crown, and weights.
 
-Besides always-on inference mining, there are compression, upscaling and object-removal
-**competitions**:
+Besides always-on inference mining, there are compression, upscaling, object-removal and
+frame-interpolation **competitions**:
 sealed-sandbox code submissions evaluated against held-out content
 ([`vidaio/competition/README.md`](../vidaio/competition/README.md)). A contender
 submits **pinned code identity** — `repo_url + commit_sha + tree_sha`
@@ -212,6 +212,14 @@ host and the schedule of each competition are announced in the VidAIO Discord (i
 the root [README](../README.md)); `list` shows every manifest, floor and allowed
 repository host. Git LFS and submodules are not supported.
 
+**One entry per operator.** A competition pays each operator once. Entries that share a
+coldkey, an advertised IP, a repository account (the `<owner>` in
+`https://github.com/<owner>/<repo>`, whatever the repository), a source tree (the enrolled
+`tree_sha`, so forks of one solution) or a byte-identical output matrix count as one
+operator: only the lowest uid among them can hold a ranked, paid place, and the others
+are excluded from the payout. Extra hotkeys therefore never add
+places; enroll your best entry once.
+
 **Use a private repository.** Enrollment names a repository, a commit and a tree; it does
 not prove who wrote the code. Anything in a public repository can be copied, or even
 enrolled as-is by someone else, before the deadline. To let the evaluator read a private
@@ -258,7 +266,9 @@ enforced by code, the same for everyone, and an enrollment cannot be edited afte
   checksum;
 - the image does not build. `Dockerfile` must be at the repository root and build for
   linux/amd64 within 30 minutes; the image may be at most the manifest's
-  `container_size_limit_gb`. Prefer prebuilt encoder binaries to compiling from source;
+  `container_size_limit_gb` (measured after the build: the apparent size of every file
+  in the image, 1 GB = 10^9 bytes). Prefer prebuilt encoder binaries to compiling from
+  source;
 - the Dockerfile uses something the sandbox builder does not support. The builder is not
   Docker/BuildKit: `ADD` is rejected (use `COPY`, or download inside a `RUN`), `USER` is
   ignored, and an image reference in `FROM` or `COPY --from` must carry a tag **or** a
@@ -285,6 +295,13 @@ enforced by code, the same for everyone, and an enrollment cannot be edited afte
   so prefer pipes to large intermediate files;
 - stdout plus stderr exceed 8 MiB. Run encoders with `-loglevel error` or redirect their logs;
 - an output is a symlink or anything other than a plain regular file.
+
+*If the platform stops your sandbox* (`run.sh` is killed by a signal and the sandbox itself
+is gone, for example a preemption), the batch is rerun on a fresh sandbox, at most twice;
+it scores zero only if that keeps happening. A `run.sh` killed while its sandbox keeps
+running (for example out of memory) is scored as a non-zero exit. Do not trap SIGTERM to
+exit 0: a batch that exits 0 is scored on the outputs it wrote, and missing clips score
+zero.
 
 *One clip scores zero when:*
 - its output is missing, empty, or not named exactly like the input. Inputs are named by their
@@ -353,6 +370,79 @@ a clip below the gate scores zero.
   that implements the contract (it is the free fill, so it scores about zero) with a
   local self-test.
 
+**Frame-interpolation competitions (track `interpolation`).** The contract above is
+unchanged (same `run.sh`, same limits); only the items and the score differ.
+- *Input:* each item is ONE Matroska file (named by its sha256, no extension) with one
+  video stream (FFV1, 4:2:0, at most 1920×1080, constant frame rate): a genuine
+  high-frame-rate clip with every other frame removed, so its rate is half the original
+  (for example 30 fps made from 60 fps). N input frames.
+- *Output:* one MP4 per item with a single H.264, HEVC, VP9 or AV1 stream of the same
+  width and height, **twice the input frame rate** and **exactly 2N − 1 frames**: frame
+  2k is input frame k, frame 2k + 1 is your new frame between input frames k and k + 1.
+  The input frames must come back unchanged: the largest per-frame mean absolute RGB
+  change between output frame 2k and input frame k must not exceed 3.0 (this also catches
+  an output shifted off the grid), so encode near-losslessly (`libx264 -crf 8`). Drive
+  your model on the exact grid: wrappers that skip near-duplicate frames, repeat frames
+  across cuts or round the frame rate change the frame count, and the item scores zero.
+- *Score:* only the inserted frames are measured, against the real frames that were
+  removed (the full-frame-rate original is sealed during the competition and published
+  afterwards): PSNR over all their pixels, SSIM on luma, LPIPS-VGG on every 4th inserted
+  frame. The validator measures two free answers the same way, repeating the previous
+  frame (hold) and averaging the two neighbours (blend), and the floor is the better of
+  the two on each metric. Each term credits only the gain over that floor, as a share of
+  what is left to gain: `s_psnr = min(1, max(0, (PSNR − floor PSNR) / 8 dB))`,
+  `s_ssim = clamp((SSIM − floor SSIM) / (1 − floor SSIM))`,
+  `s_lpips = clamp((floor LPIPS − LPIPS) / floor LPIPS)`, and the item scores
+  `0.3 · s_psnr + 0.3 · s_ssim + 0.4 · s_lpips`. Returning the hold or the blend scores
+  zero; an item also scores zero on a frame-count, size or kept-frame violation. The code
+  is `vidaio/scoring/interpolation.py`, `vidaio/scoring/interpolation_formula.py` and
+  `vidaio/scoring_worker/interpolation_backend.py`.
+- *Speed counts* when the manifest's `result_rules` carry a speed term (all four
+  `speed_*` fields; frame interpolation only). Every `run.sh` call is timed by the
+  validator's runner, from start to exit, on the single pinned GPU type and the anchored
+  CPU/RAM envelope (`allowed_gpus` has one entry), and the times are added over all your
+  batches. A batch your solution fails (non-zero exit, timeout, unsafe output) counts its
+  full `batch_timeout_seconds` (as raised by any execution amendment), so failing fast
+  never buys speed. When a batch's Sandbox is stopped and the batch is rerun, the stopped
+  attempt counts too, up to the time of the run that completed, so bringing your own
+  Sandbox down never buys a faster run. Model loading inside `run.sh` counts too. With `spf` = total seconds / `speed_inserted_frames`:
+  `speed_score = clamp(log(speed_slow_spf / spf) / log(speed_slow_spf / speed_fast_spf), 0, 1)`
+  is 1 at or under `speed_fast_spf` (for example 1/30 s per inserted frame: real time for
+  30 to 60 fps) and 0 at or over `speed_slow_spf`, and every 2x speed-up is worth the same.
+  Your competition score is `mean item score x (1 - speed_weight + speed_weight x
+  speed_score)`; the crown and podium bars apply to that number. The per-batch times are
+  committed with the result (attested by the validator that ran the sandboxes) and the
+  auditor re-derives the score from them.
+- *Content:* the hidden clips are genuine high-frame-rate footage with real motion (no
+  duplicated or static frames), with easy and hard cases mixed: camera pans, fast
+  subjects, occlusions, thin structures and fine texture. Methods that estimate motion
+  between the two neighbours do far better than blending. An entry must compute its new
+  frames from the input it is given: shipping video, frames or any other copy of existing
+  footage in the image to look the answer up is not a solution, and an entry found doing
+  it is rejected and its operator barred from later competitions.
+- *Licences: commercial use only.* The winning solution runs on the VidAIO website, so
+  everything an entry ships (code, libraries, model weights) must be under a licence that
+  allows commercial use (Apache-2.0, MIT, BSD, ISC, MPL-2.0, CC0/Unlicense, CC-BY-4.0, or
+  GPL/LGPL such as ffmpeg), judged on what is shipped, not on training data.
+  Non-commercial, research-only, no-derivatives, AGPL/SSPL or unlicensed components are
+  refused, including fine-tuned, merged, adapted or distilled versions of such models.
+  Your own code must be released under Apache-2.0 or MIT (a `LICENSE` file at the
+  repository root at the enrolled commit), and a `LICENSES.md` at the root must list
+  every third-party component (name, source URL, licence, location in the repository).
+  What is reviewed must be what is built, so every file your Dockerfile downloads must be
+  pinned by content: check its sha256 in the same `RUN` step
+  (`echo "<sha256>  model.pth" | sha256sum -c -`), or use a Hugging Face commit revision,
+  a git commit, or `pip install` with `==` versions or `--require-hashes`. An entry with an
+  unpinned download is rejected. `python scripts/competition_precheck.py <repo> --commit
+  <sha> --commercial` flags the common cases.
+  Entries are checked in the 24 h between the enrollment deadline and the start of
+  evaluation; an entry that breaks these rules is rejected then, publicly with the
+  reason, and never scored. A violation found later, until the competition completes,
+  takes the entry out the same way: it leaves the scoring and the result.
+- *Start from* `examples/competition_contenders/interpolation_example/`: a complete CPU
+  entry that implements the contract (it is the blend, so it scores about zero) with a
+  local self-test.
+
 **Result rules.** A competition may publish its own `result_rules` in the anchored
 manifest: `crown_margin` (the relative win over the rerun baseline that makes the result
 a CROWN), `crown_min_score` (an absolute score the winner must also reach to crown),
@@ -360,7 +450,8 @@ and `podium_min_margin` / `podium_min_score` (what a contender must reach to hol
 rank at all). They are identical for every contender, fixed before enrollment, copied
 into the epoch evidence and re-checked by auditors against the anchored manifest. When
 the block is absent the protocol default applies (crown at an inclusive 5% margin, every
-ranked contender eligible for the podium).
+ranked contender eligible for the podium). Margins are measured against the rerun
+baseline only, never against the runner-up, so entries never count against each other.
 If the rerun baseline scores zero on the hidden clips, the relative margins cannot
 discriminate and the absolute bars decide alone: `crown_min_score` for a CROWN and
 `podium_min_score` for a paid rank. A competition may also be announced **without a
@@ -376,7 +467,18 @@ crown rule opens a **PODIUM** window whose pot is split 50/24/13/8/5 over the to
 qualifying places; a result that meets it opens a **CROWN** window split 90/4/3/2/1.
 Unfilled places go to the filled ones in proportion; a result with no qualifying
 contender closes the window and the subnet burns until the next result; a deregistered
-paid hotkey sends its share to the sink. Every competition anchors these values in its
+paid hotkey sends its share to the sink, and an entry whose hotkey is not registered when
+the result is applied is left out of the ranking.
+
+**Tokenomics v4 (from the frame-interpolation competition on).** Competitions run every
+two weeks and a result pays for **two weeks** (336 hours), so each result covers the time
+until the next one. A gap with no active result no longer burns everything: **50 % burns
+and 50 % goes to the licensing treasury**, a registered hotkey that pays licensing fees to
+winners whose solutions run on the VidAIO website. While a window is active the treasury
+keeps **0.5 %** so it stays registered, and the window's pot and split apply to the other
+99.5 % (a 90/4/3/2/1 crown pays 89.55/3.98/2.985/1.99/0.995 % of emissions). Every epoch
+log names the treasury hotkey it pays (`treasury_hotkey`), and auditors check it against
+their own policy; an unregistered treasury's share burns. Every competition anchors these values in its
 manifest (`result_rules`), so check the manifest of the competition you enter: the pot
 and the split may differ from the defaults. When a competition has a baseline, the
 executable comparison floor is that archived baseline rerun on the same hidden matrix.
