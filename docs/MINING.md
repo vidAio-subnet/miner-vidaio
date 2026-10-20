@@ -478,9 +478,11 @@ that says `"upscaling_scoring": "faithful"` is scored as below; check the manife
 competition you enter.
 - *Input:* each item is ONE video file (named by its sha256, no extension; H.264 in MP4,
   so probe it rather than trusting a name): a sealed 1080p original, degraded and
-  downscaled by 2 (to 540p) or by 4 (to 270p), about four seconds at a constant frame rate. Next
-  to each input, a hidden file `.vidaio-next-upscale-factor-<sha256>` holds the task as
-  JSON, for example `{"target_height":1080,"target_width":1920,"upscale_factor":2}`.
+  downscaled by 2 (to 540p) or by 4 (to 270p), about four seconds at a constant frame rate.
+  The input is exactly the target divided by the factor (960×540 or 480×270; 540×960 or
+  270×480 in portrait), with no crop. Next to each input, a hidden file
+  `.vidaio-next-upscale-task-<sha256>` (the input's name) holds the task as JSON, for example
+  `{"target_height":1080,"target_width":1920,"upscale_factor":2}`.
   Originals are landscape or **portrait**: the target is 1920×1080 or 1080×1920, so
   always read the target size from that file. The folder holds nothing else.
 - *Output:* one MP4 per item with a single H.264, HEVC, VP9 or AV1 stream of exactly the
