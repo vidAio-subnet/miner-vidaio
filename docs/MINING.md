@@ -398,7 +398,7 @@ unchanged (same `run.sh`, same limits); only the items and the score differ.
   is `vidaio/scoring/interpolation.py`, `vidaio/scoring/interpolation_formula.py` and
   `vidaio/scoring_worker/interpolation_backend.py`.
 - *Speed counts* when the manifest's `result_rules` carry a speed term (all four
-  `speed_*` fields; frame interpolation only). Every `run.sh` call is timed by the
+  `speed_*` fields; frame interpolation, faithful upscaling and streaming compression). Every `run.sh` call is timed by the
   validator's runner, from start to exit, on the single pinned GPU type and the anchored
   CPU/RAM envelope (`allowed_gpus` has one entry), and the times are added over all your
   batches. A batch your solution fails (non-zero exit, timeout, unsafe output) counts its
@@ -426,14 +426,19 @@ unchanged (same `run.sh`, same limits); only the items and the score differ.
   GPL/LGPL such as ffmpeg), judged on what is shipped, not on training data.
   Non-commercial, research-only, no-derivatives, AGPL/SSPL or unlicensed components are
   refused, including fine-tuned, merged, adapted or distilled versions of such models.
+  Weights that a model's authors publish from its repository (linked in its README or
+  release) take that repository's licence. A file the image ships but your solution
+  never loads at run time is not judged.
   Your own code must be released under Apache-2.0 or MIT (a `LICENSE` file at the
   repository root at the enrolled commit), and a `LICENSES.md` at the root must list
   every third-party component (name, source URL, licence, location in the repository).
   What is reviewed must be what is built, so every file your Dockerfile downloads must be
   pinned by content: check its sha256 in the same `RUN` step
   (`echo "<sha256>  model.pth" | sha256sum -c -`), or use a Hugging Face commit revision,
-  a git commit, or `pip install` with `==` versions or `--require-hashes`. An entry with an
-  unpinned download is rejected. `python scripts/competition_precheck.py <repo> --commit
+  a git commit, `pip install` with `==` versions or `--require-hashes`, or `apt-get
+  install` with exact versions (`pkg=1.2.3-1`) or from a dated snapshot mirror
+  (`snapshot.debian.org`, `snapshot.ubuntu.com`). An entry with an unpinned download is
+  rejected. `python scripts/competition_precheck.py <repo> --commit
   <sha> --commercial` flags the common cases.
   Entries are checked in the 24 h between the enrollment deadline and the start of
   evaluation; an entry that breaks these rules is rejected then, publicly with the
@@ -441,6 +446,82 @@ unchanged (same `run.sh`, same limits); only the items and the score differ.
   takes the entry out the same way: it leaves the scoring and the result.
 - *Start from* `examples/competition_contenders/interpolation_example/`: a complete CPU
   entry that implements the contract (it is the blend, so it scores about zero) with a
+  local self-test.
+
+**Streaming compression competitions (track `compression`, streaming scoring).** A
+compression manifest that says `"compression_scoring": "streaming"` scores each clip as a
+streaming rendition: the best quality inside a fixed bitrate budget, not the smallest
+file over a VMAF bar. The contract above is unchanged (same `run.sh`, same limits).
+- *Input:* each item is one lossless clip (FFV1 in Matroska, named by its sha256).
+- *Budget:* the manifest anchors `streaming_rules`. Each clip's budget is
+  `bits_per_pixel × width × height × fps / 1000` kbps, computed from the clip itself (for
+  example 0.05 bpp gives 3.1 Mbps at 1080p30 and 1.4 Mbps at 720p30).
+- *Output:* one file per item, a single H.264, HEVC, VP9 or AV1 stream with the input's
+  size, frame count and frame rate.
+- *Delivery rules,* measured on your video packets (container overhead not counted).
+  Breaking one zeroes the clip:
+  - the average bitrate stays within the budget, with 1 % slack;
+  - no window of `peak_window_seconds` consecutive frames goes above `peak_ratio` × the budget;
+  - the first frame is a keyframe, and keyframes are at most `max_keyframe_interval_seconds` apart, so the stream can be segmented.
+- *Score:* `(VMAF − 60) / 40`, clamped to [0, 1]. VMAF is measured as for compression (same
+  pinned model, the second-model check and the chroma and tone checks against sharpening
+  or colour tricks). There is no VMAF threshold: quality is the score.
+- *Speed counts* when the manifest's `result_rules` carry a speed term, as for frame
+  interpolation, with `speed_inserted_frames` = the output frames over the hidden set.
+- The code is `vidaio/scoring/streaming.py` and `vidaio/scoring_worker/streaming_backend.py`.
+  Start from `examples/competition_contenders/streaming_example/`: a complete x264 entry
+  that measures its own packets, with a local self-test.
+
+**Upscaling competitions (track `upscaling`, faithful scoring).** The contract above is
+unchanged (same `run.sh`, same limits); only the items and the score differ. A manifest
+that says `"upscaling_scoring": "faithful"` is scored as below; check the manifest of the
+competition you enter.
+- *Input:* each item is ONE video file (named by its sha256, no extension; H.264 in MP4,
+  so probe it rather than trusting a name): a sealed 1080p original, degraded and
+  downscaled by 2 (to 540p) or by 4 (to 270p), about four seconds at a constant frame rate. Next
+  to each input, a hidden file `.vidaio-next-upscale-factor-<sha256>` holds the task as
+  JSON, for example `{"target_height":1080,"target_width":1920,"upscale_factor":2}`.
+  Originals are landscape or **portrait**: the target is 1920×1080 or 1080×1920, so
+  always read the target size from that file. The folder holds nothing else.
+- *Output:* one MP4 per item with a single H.264, HEVC, VP9 or AV1 stream of exactly the
+  target width and height, the input's frame count and frame rate. Your encode is
+  measured too, so encode at high quality (`libx264 -crf 10` or lossless); output size
+  is not scored, but the 512 MiB / 2 GiB caps still apply. Frames are compared in 8-bit
+  4:2:0 BT.709 limited range: tag your stream (`-colorspace bt709 -color_primaries bt709
+  -color_trc bt709 -color_range tv`); an untagged stream is read as exactly that.
+- *Score:* every output frame is compared with the original it must restore (sealed
+  during the competition, published afterwards): PSNR over all pixels, SSIM on luma,
+  LPIPS-VGG on every 4th frame. The validator measures its free answer the same way: the
+  input Lanczos-upscaled to the target size (ffmpeg `scale=W:H:flags=lanczos`). Each
+  term credits only the gain over that floor, as a share of what is left to gain:
+  `s_psnr = min(1, max(0, (PSNR − floor PSNR) / 6 dB))`,
+  `s_ssim = clamp((SSIM − floor SSIM) / (1 − floor SSIM))`,
+  `s_lpips = clamp((floor LPIPS − LPIPS) / floor LPIPS)`, and the item scores
+  `0.3 · s_psnr + 0.3 · s_ssim + 0.4 · s_lpips`. Returning the Lanczos upscale scores
+  zero, and so does a size or frame-count mismatch. **Faithful, not generative:** detail
+  that is not in the original moves your frames away from it and costs PSNR, SSIM and
+  LPIPS, so a model that restores what was lost beats one that invents texture. No VMAF,
+  PieAPP or file-size gate applies. The code is `vidaio/scoring/upscaling_faithful.py`,
+  `vidaio/scoring/upscaling_faithful_formula.py` and
+  `vidaio/scoring_worker/upscaling_faithful_backend.py`.
+- *Speed counts* when the manifest's `result_rules` carry a speed term, exactly as for
+  frame interpolation, with `spf` = total seconds / `speed_inserted_frames`, which for
+  upscaling is the number of output frames over the whole hidden set.
+- *Content:* the hidden originals are private phone footage, 3D renders and AI-generated
+  clips (only ones with genuine full-resolution detail), never from public stock sites, and
+  every clip comes from a different video: handheld, vehicle and drone motion, faces, fur,
+  foliage, water, text and signs, fine texture, night scenes; frame rates from 24 to 60 fps,
+  landscape and portrait. How hard the upscale is varies on purpose, from mild ×2 to heavily
+  degraded ×4. The degradation is realistic and published in kind (downscale,
+  slight blur, a web-bitrate H.264 encode, sometimes low-light noise); the parameters of
+  each item stay sealed. An entry must compute its output from the input it is given:
+  shipping video, frames or any other copy of existing footage in the image to look the
+  answer up is not a solution, and an entry found doing it is rejected and its operator
+  barred from later competitions.
+- *Licences:* the frame-interpolation rules above apply unchanged (commercial use only,
+  `LICENSE` and `LICENSES.md`, every download pinned by content).
+- *Start from* `examples/competition_contenders/upscaling_example/`: a complete CPU entry
+  that implements the contract (it is the Lanczos floor, so it scores about zero) with a
   local self-test.
 
 **Result rules.** A competition may publish its own `result_rules` in the anchored
