@@ -423,12 +423,26 @@ unchanged (same `run.sh`, same limits); only the items and the score differ.
 - *Licences: commercial use only.* The winning solution runs on the VidAIO website, so
   everything an entry ships (code, libraries, model weights) must be under a licence that
   allows commercial use (Apache-2.0, MIT, BSD, ISC, MPL-2.0, CC0/Unlicense, CC-BY-4.0, or
-  GPL/LGPL such as ffmpeg), judged on what is shipped, not on training data.
+  GPL/LGPL such as ffmpeg).
   Non-commercial, research-only, no-derivatives, AGPL/SSPL or unlicensed components are
   refused, including fine-tuned, merged, adapted or distilled versions of such models.
   Weights that a model's authors publish from its repository (linked in its README or
   release) take that repository's licence. A file the image ships but your solution
   never loads at run time is not judged.
+- *Training data: commercial training only.* Everything you train, fine-tune or tune your
+  entry on (weights, thresholds, filter strengths or any other setting) must allow
+  training a model for commercial use: your own footage, CC0 or CC-BY material, or
+  synthetic data from a generator whose terms allow training other models on its outputs
+  (for example Apache-2.0 Wan 2.x). Non-commercial (CC BY-NC, CC BY-NC-SA), research-only
+  or no-derivatives datasets, and outputs of models whose licence restricts training on
+  them, are not allowed. LTX-2.x is one: its licence (Attachment A, item 18) forbids using
+  its outputs to train, improve or fine-tune another model for commercial use, and
+  §3.2 makes models trained on its outputs LTX derivatives. You may still use such
+  material to evaluate your entry (to measure how it scores), never to train or tune it.
+  Pretrained weights you build on are judged by their own published licence, not by the
+  data their authors trained them on. We cannot fully verify training data, so keeping it
+  compliant is your responsibility; an entry whose weights or settings come from data
+  that breaks this rule is not accepted.
   Your own code must be released under Apache-2.0 or MIT (a `LICENSE` file at the
   repository root at the enrolled commit), and a `LICENSES.md` at the root must list
   every third-party component (name, source URL, licence, location in the repository).
@@ -521,7 +535,10 @@ competition you enter.
   answer up is not a solution, and an entry found doing it is rejected and its operator
   barred from later competitions.
 - *Licences:* the frame-interpolation rules above apply unchanged (commercial use only,
-  `LICENSE` and `LICENSES.md`, every download pinned by content).
+  `LICENSE` and `LICENSES.md`, every download pinned by content), and so does the
+  training-data rule. In `practice-pack-004`, p01–p07 (VidAIO's own phone footage and
+  CC0 Blender renders) may be used for training; p08–p10 were generated with LTX-2.5, so
+  use them only to evaluate your entry, never to train or tune it.
 - *Start from* `examples/competition_contenders/upscaling_example/`: a complete CPU entry
   that implements the contract (it is the Lanczos floor, so it scores about zero) with a
   local self-test.
