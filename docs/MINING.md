@@ -1,167 +1,43 @@
 # MINING — how to mine on the VidAIO subnet (SN85)
 
-How to run a miner against this stack, what you are scored on, and how to win
-honestly. The quickstart and the architecture overview are in the root
-[README.md](../README.md).
+Mining on VidAIO (Bittensor **netuid 85**, live on mainnet) means entering
+**competitions**. You build a solution as a containerised entry in a Git repository,
+enroll it with a request signed by your registered hotkey before the enrollment
+deadline, and the validator builds it and runs it on a hidden set of clips in a sealed
+GPU sandbox. Every output is scored by the public scorer, the result is published and
+independently audited, and miner emissions are paid to the result. There is no
+live-serving mining any more: you do not run a miner server, advertise an endpoint or
+answer validator requests.
 
-> **Status.** The subnet is LIVE on Bittensor mainnet, **netuid 85** — register
-> and mine today. The production default is the real chain (`chain.mode:
-> bittensor`), constructing the `BittensorChainAdapter`. Before launch, real-GPU
-> miners earned on both inference tracks and participated in both earning
-> competition tracks across separately advertised hosts on live testnet.
-> `chain.mode: report` remains the default ONLY in test/dev/local overlays.
+This guide is the full rulebook. The quickstart is the root [README.md](../README.md).
+
+## Contents
+
+- [How competitions work](#how-competitions-work)
+- [How you earn](#how-you-earn)
+- [Before you start: wallet, registration, stake](#before-you-start-wallet-registration-stake)
+- [Entering a competition](#entering-a-competition)
+- [Building and testing an entry](#building-and-testing-an-entry)
+- [Sandbox and limits](#sandbox-and-limits)
+- [Checklist: what loses you a clip, a batch or the whole entry](#checklist-what-loses-you-a-clip-a-batch-or-the-whole-entry)
+- [What your code may do](#what-your-code-may-do)
+- [Tracks](#tracks): [compression](#compression-track-compression),
+  [object removal](#object-removal-track-removal),
+  [frame interpolation](#frame-interpolation-track-interpolation),
+  [streaming compression](#streaming-compression-track-compression-streaming-scoring),
+  [faithful upscaling](#faithful-upscaling-track-upscaling-faithful-scoring),
+  [generative upscaling](#generative-upscaling-track-upscaling-generative-scoring)
+- [Speed](#speed)
+- [Licences](#licences) and the [licence rulings so far](#licence-rulings-so-far)
+- [Result rules](#result-rules)
+- [Results and what is published](#results-and-what-is-published)
 
 ---
 
-## What miners do
+## How competitions work
 
-Remote GPU backends may opt into bounded software recovery using
-`VIDAIO__MINER__REMOTE_GPU_ALLOW_CPU_FALLBACK=true` (default false).
-The worker must bind the response to the same input, track and variant and
-honestly report `cpu:ffmpeg-fallback` with GPU acceleration false. This does not
-relax deadlines, output caps, signed ingress or quality scoring. Software
-recovery uses the same CFR timestamp normalization as the scorer, not a
-frame-preserving re-timing of VFR input. It can produce different quality/size
-results; miners should test both
-tracks before enabling it. Upstream errors are logged with bounded,
-credential-redacted diagnostics.
-
-Miners transform video. The subnet (or the organic gateway, for paying customers)
-sends you a task; you return a processed file; the result is measured with real
-metrics (ffmpeg/libvmaf) and folded into your standing.
-
-**Scoring and weights are CENTRAL.** You are NOT scored separately by
-each validator any more. An owner-run **Scoring Authority** dispatches the
-challenges, runs the real measurement, folds the EWMA once (centrally), and each
-epoch publishes one immutable, on-chain-anchored **epoch log** of the authoritative
-scores. Validators then converge on that log (they submit the identical weight
-vector) AND independently AUDIT it. So your score is measured once, honestly, and
-is **independently recomputable and audited** — every scored item can be re-run
-over the real engine from the preserved audit files, and a substituted score or
-weight is provably caught (see the integrity invariant below). Nothing you do is judged by
-a private per-validator sampling any more.
-
-**Two pools, one pool per hotkey identity.** The subnet runs two tracks:
-
-- **compression** — re-encode the input smaller (byte ratio must shrink ≥ 1.25×)
-  while keeping VMAF against the **served input** above the threshold. The quality
-  term and the floor are measured against the exact file you received, so the VMAF
-  you compute locally (libvmaf `vmaf_v0.6.1`, same canonicalization) is the VMAF
-  you are scored on; the sealed-reference number is still published in every packet
-  as `metrics.vmaf_pristine` for audit;
-- **upscaling** — upscale the degraded input (discrete factors 2× / 4×), scored
-  on PieAPP quality + content length under per-factor file-size caps.
-
-**Inputs are per-challenge variants of the source.** Since `dag_version 8` the sealed
-reference itself is a seed-drawn transform of the original clip (horizontal flip or
-not, a small crop on every side, mild gamma/saturation/hue shifts and light seeded
-grain), and the input you receive derives from that reference. Your output must match
-the served input's geometry exactly (`target_width`/`target_height` in the task params);
-there is no public original that scores — a clip found online is the wrong
-geometry and colour, and the source-proximity check (below) still applies.
-
-A miner identity competes in exactly ONE pool, declared by the **TaskWarrant**:
-the validator probes `GET /warrant` and buckets every score for your hotkey
-there. To earn in both pools you run two identities (two hotkeys, two
-endpoints). A missing/garbage/timeout warrant answer means you are **skipped**
-for the round — the validator never defaults you into a track
-([`vidaio/validator/README.md`](../vidaio/validator/README.md), the TaskWarrant
-fix). The reference miner declares its pool via `miner.warrant_track`
-(`vidaio/miner/config.py`).
-
-### How you earn (plain-language tokenomics)
-
-Full engine: [`vidaio/tokenomics/README.md`](../vidaio/tokenomics/README.md);
-levers and their locked values in [`config/default.yaml`](../config/default.yaml).
-
-- Competition/crown is **live and earning**. Outside an active result window
-  (**IDLE**), `80%` goes to inference and the fixed remaining `20%` goes to the canonical
-  sink. A non-breakthrough result opens a seven-day **PODIUM** window (`60%` inference /
-  `40%` competition); a breakthrough opens a seven-day **CROWN** window (`10%` inference /
-  `90%` competition). The inference portion always keeps its internal **0.8 compression /
-  0.2 upscaling** split; neither track inherits the other's unused allocation.
-- Within a track, the **top 5** miners by accumulated score take a graded
-  `5:4:3:2:1` rank curve; #1 earns five times #5, and rank 6+ takes nothing
-  (`top_n_per_track: 5`). Scores below the absolute `minimum_payout_score: 0.05`
-  earn zero even when fewer than five miners serve the track.
-- Your standing is an **EWMA** of round scores: `new = 0.75·old + 0.25·score`
-  (`ewma_decay: 0.75`). One great round doesn't crown you; one bad round
-  doesn't bury you — but zeros compound.
-- The **retention lever was removed for v1** (owner decision): there is no longer
-  any multiplier for holding vs liquidating emitted alpha. The graded top-5 curve is
-  based only on rank, with no retention reshaping. `burn_proportion` stays locked at 0.
-- Stake never increases the size of a reward: `alpha_stake_weigh_factor` is locked
-  at 0. Schema v17 adds an optional inference eligibility floor,
-  `tokenomics.payout_min_alpha_stake`, disabled by default (`0.0`).
-- Selection dedups by IP and coldkey (lowest uid wins) — running clones of one
-  operation on one box or one coldkey does not multiply slots.
-- Any fixed track/podium/crown share with no eligible recipient is sent to the
-  canonical sink/burn UID. It is not renormalized into another miner's pool.
-
-### Distinct-content inference payouts (schema v17; ACTIVE on mainnet since epoch 24978, 2026-09-07 11:40 UTC)
-
-**Identical outputs share one scoring slot; differentiate your output to earn.**
-This also applies to honest miners running the same deterministic reference encoder
-on separate coldkeys and hosts. It is a content rule, not an accusation about ownership.
-The rule has been active on mainnet (netuid 85) since epoch 24978 (2026-09-07 11:40 UTC).
-It supersedes the older byte-exact-only dedup for economic purposes; the exact-byte path
-still exists as the first, trivial tier of the same check.
-
-For each ordinary challenge and track, the scorer hashes the entire canonical Y4M
-video it measured (the decoded, canonicalized stream, not the container bytes) and
-records 32 frame fingerprints: frames sampled at positions floor(i·(N−1)/31) for
-i = 0..31, each area-resized to 32×32 luma, transformed by an 8×8 DCT and reduced to a
-64-bit perceptual hash (`content_fingerprint/1`). VMAF and compression rate play NO
-part in this comparison. Two eligible outputs match only when their canonical SHA-256
-digests are identical under the same canonicalization plan (`canonical_content/3`,
-`exact_canonical_digest/1`). Fingerprints and encoded sizes are still recorded in the
-evidence but no longer create a match on their own.
-
-Rounds finalized under the earlier rules keep them and are verified under them:
-`canonical_content/1` also matched ≥30 of 32 fingerprints within 6 bits AND encoded sizes
-within 1% of the larger file; `canonical_content/2` used the same fingerprint test with a
-0.2% size band.
-
-Connected matches form a group, including indirect matches through another output.
-The reference member is the minimum of the existing block-hash/hotkey ordering, using
-the authenticated challenge anchor fixed before dispatch. Its measured score is divided
-equally among all members of the group (`equal_share/1`): every member, the reference
-included, receives `winner_score / n` for that round as an archived
-`validator-content-duplicate/4` share packet; non-reference members carry the
-`DUPLICATE_CONTENT` reason with the share as their score. The group as a whole earns
-exactly one measurement, so copying an output is never better than producing a distinct
-one. The share enters the ordinary EWMA; it does not instantly erase an existing
-accumulator. Changing container tags or adding imperceptible noise is not a reliable way
-to obtain another slot. Materially different encodes can earn separately when they do
-not satisfy the matching rule.
-
-Only successfully measured, gate-passing outputs with a positive score and complete
-signed archive evidence are considered. A gate-passed zero (for example VMAF below the
-threshold) keeps its own zero and never claims a group's slot or suppresses positive
-outputs. If the authority cannot verify or archive a component's evidence before
-publication, it skips that component without a zero or a score fold. Auditors independently decode the archived
-outputs, reconstruct the complete declared scored roster and groups, and verify the
-salted reference member and every share against its archived measurement. The existing
-exact-byte duplicate path remains in force.
-
-The optional alpha floor uses stake at the epoch's exact close block, before inference
-IP/coldkey selection. Eligible miners retain the usual rank curve; a track with no
-eligible miners sends its allocation to the canonical sink. Competition podium
-awards are unchanged. The top-five curve, score floor, EWMA and
-pool percentages above remain unchanged. Audit disagreements remain report-only under
-the project design record; they do not automatically suppress authority weights.
-
-### The competition track (the breakthrough crown)
-
-> **Live.** The shipping config enables competition emissions. Economic rank
-> comes only from the arithmetic mean of the exact committed score packets, with a stable
-> score/hotkey/uid tie-break. Stored human `final_rank`, manual disqualification,
-> eligibility, and review preferences do not affect payout. A CPU-only auditor opens the
-> corresponding audit bundles and independently rebuilds the result, crown, and weights.
-
-Besides always-on inference mining, there are compression, upscaling, object-removal and
-frame-interpolation **competitions**:
-sealed-sandbox code submissions evaluated against held-out content
+VidAIO runs compression, upscaling, object-removal and frame-interpolation
+**competitions**: sealed-sandbox code submissions evaluated against held-out content
 ([`vidaio/competition/README.md`](../vidaio/competition/README.md)). A contender
 submits **pinned code identity** — `repo_url + commit_sha + tree_sha`
 (`ContenderSpec`, `vidaio/competition/interfaces.py`) — that must build via its
@@ -172,103 +48,342 @@ Dockerfile into an image honoring the run contract:
 ```
 
 one output per input under the same digest-named filename, plain regular files
-only, exit 0. Evaluation runs in an isolated sandbox: no network, read-only root
-filesystem, no secrets, bounded output — your code sees inputs and writes outputs,
-nothing else. Builds do have network access; runs never do.
+only, exit 0. Evaluation runs in an isolated sandbox: no network, no secrets, no
+environment variables, bounded output — your code sees inputs and writes outputs,
+nothing else (details in [Sandbox and limits](#sandbox-and-limits)). Builds do have
+network access; runs never do.
 
 **What is fixed before you enroll.** Every competition is described by a manifest whose
 digest is anchored on chain *before* enrollment opens, and the manifest is public. It
 carries: the four lifecycle times, the enrollment stake floor, the quality gate
 (`vmaf_threshold`), the compute envelope every contender gets
 (`sandbox_resources`: CPUs, memory, and `batch_timeout_seconds`, plus `allowed_gpus`;
-see "Time and disk limits" below), the result rules
-(`result_rules`, below), the archived baseline you are compared against (a competition
-may have none: then only its absolute score bars decide), and the ordered **commitments
-to the hidden clips** (`evaluation_item_commitments`).
+see [Sandbox and limits](#sandbox-and-limits)), the result rules
+([`result_rules`](#result-rules)), the archived baseline you are compared against (a
+competition may have none: then only its absolute score bars decide), and the ordered
+**commitments to the hidden clips** (`evaluation_item_commitments`).
 The clips themselves stay sealed until evaluation; the commitments let anyone prove
 afterwards exactly which clips were used and that none was swapped.
 
-**Score.** Each clip is scored with the same public compression formula as inference
-(`min(1, (0.7·(1 − rate) + 0.3·VMAF/100) / 1.12)`, zero below the VMAF gate or on a
-frame-count/geometry mismatch). Your competition score is the **plain mean of your
-per-clip scores**; ranking is by that mean with a stable hotkey/uid tie-break. Human
-review can flag a contender for investigation but never changes a payout.
+**Score.** In a compression competition each clip is scored with the public compression
+formula (`min(1, (0.7·(1 − rate) + 0.3·VMAF/100) / 1.12)`, zero below the VMAF gate or
+on a frame-count/geometry mismatch); the other tracks have their own item scores
+([Tracks](#tracks)). Your competition score is the **plain mean of your per-clip
+scores** (times the speed factor when the manifest has a [speed term](#speed)); ranking
+is by that mean with a stable hotkey/uid tie-break. Human review can flag a contender
+for investigation but never changes a payout.
 
-**Entering.** Enrollment is self-serve and signed:
+**Audited.** The shipping config enables competition emissions. Economic rank comes only
+from the arithmetic mean of the exact committed score packets, with a stable
+score/hotkey/uid tie-break. Stored human `final_rank`, manual disqualification,
+eligibility, and review preferences do not affect payout. A CPU-only auditor opens the
+corresponding audit bundles and independently rebuilds the result, crown, and weights.
+
+## How you earn
+
+The payout code is `vidaio/tokenomics/weights.py` (`EMISSION_PROFILES` holds the v3 and
+v4 shares and splits); the defaults are in [`config/default.yaml`](../config/default.yaml),
+and every competition anchors its own values in its manifest (`result_rules`).
+
+Competition payouts use the latest globally applied result for seven days (a newer
+result replaces it). Since tokenomics v3 (2026-09-27) a result pays **100 % of miner
+emissions** by default: a result that does not meet the crown rule
+([Result rules](#result-rules)) opens a **PODIUM** window whose pot is split
+50/24/13/8/5 over the top five qualifying places; a result that meets it opens a
+**CROWN** window split 90/4/3/2/1. Unfilled places go to the filled ones in proportion;
+a result with no qualifying contender closes the window and the subnet burns until the
+next result; a deregistered paid hotkey sends its share to the sink, and an entry whose
+hotkey is not registered when the result is applied is left out of the ranking.
+
+**Tokenomics v4 (from the frame-interpolation competition on).** Competitions run every
+two weeks and a result pays for **two weeks** (336 hours), so each result covers the time
+until the next one. A gap with no active result no longer burns everything: **50 % burns
+and 50 % goes to the licensing treasury**, a registered hotkey that pays licensing fees to
+winners whose solutions run on the VidAIO website. While a window is active the treasury
+keeps **0.5 %** so it stays registered, and the window's pot and split apply to the other
+99.5 % (a 90/4/3/2/1 crown pays 89.55/3.98/2.985/1.99/0.995 % of emissions). Every epoch
+log names the treasury hotkey it pays (`treasury_hotkey`), and auditors check it against
+their own policy; an unregistered treasury's share burns. Every competition anchors these values in its
+manifest (`result_rules`), so check the manifest of the competition you enter: the pot
+and the split may differ from the defaults. When a competition has a baseline, the
+executable comparison floor is that archived baseline rerun on the same hidden matrix.
+Every contender uses the same enrollment, scoring, audit, and payout path.
+`tokenomics.competition_emissions_enabled` is retained only as an emergency off
+switch; emissions-on is the normal state.
+
+Stake never increases the size of a reward (`alpha_stake_weigh_factor` is locked at 0):
+it is only the enrollment floor below. A competition pays each operator once
+([One entry per operator](#one-entry-per-operator)).
+
+## Before you start: wallet, registration, stake
+
+- **Wallet.** Create a coldkey on a secure machine and a fresh hotkey for mining
+  (`btcli wallet new_coldkey`, `btcli wallet new_hotkey`). Enrollment is signed with the
+  **hotkey** only; your coldkey is never used.
+- **Registration is standard btcli, operator-side**: `btcli subnet register` with your
+  hotkey on netuid 85 — no code path registers for you. The hotkey must be registered
+  when you enroll and still be registered when the result is applied.
+- **Stake.** The signing hotkey must hold the competition's alpha-stake floor (see
+  [Stake and registration](#stake-and-registration)); `list` prints it.
+- **Self-signed enrollment.** The enrolling hotkey signs its own enrollment request
+  (Scheme A headers, see `vidaio.services.hotkey_auth.sign_request_headers`), must be
+  registered on the subnet, and must clear the configured minimum alpha stake. An
+  operator cannot enroll a hotkey on its behalf; a signer may only enroll itself.
+- **Client.** The enrollment client runs from this repository and needs `bittensor`:
+  `pip install -e '.[chain]'`.
+
+## Entering a competition
+
+### Enrolling
+
+Enrollment is self-serve and signed with your hotkey. The public
+competitions address is `https://95.133.254.122/competitions`; if it ever moves, the
+competition hub ([subnet.vidaio.io/competitions](https://subnet.vidaio.io/competitions)) and the
+announcement in the VidAIO Discord (invite in the root [README](../README.md)) give the
+current one. Run the client from the public miner repository (it needs `bittensor`)
+inside your solution's clone, checked out at the commit you want evaluated:
 
 ```
-python scripts/competition_enroll.py list   --url https://<competitions-host>
-python scripts/competition_enroll.py enroll --url https://<competitions-host> \
-    --competition-id <id> --repo-url https://github.com/you/solution.git \
-    --commit <commit sha> --tree <tree sha> \
+cd /path/to/your-solution        # your clone, at the commit to evaluate, already pushed
+python /path/to/miner-vidaio/scripts/competition_enroll.py list \
+    --url https://95.133.254.122/competitions
+python /path/to/miner-vidaio/scripts/competition_enroll.py enroll \
+    --url https://95.133.254.122/competitions \
+    --competition-id <competition id from list> \
+    --repo-url https://github.com/<you>/<repo>.git \
     --wallet-name <coldkey name> --wallet-hotkey <hotkey name>
 ```
 
-The request body is only `{repo_url, commit_sha, tree_sha}` and is signed with your
-**hotkey** (your coldkey is never used). The validator verifies the signature, that the
-hotkey is registered on the subnet, and that its alpha stake — read from the chain, not
-from your request — clears the floor. One submission per hotkey per competition. The
-host and the schedule of each competition are announced in the VidAIO Discord (invite in
-the root [README](../README.md)); `list` shows every manifest, floor and allowed
-repository host. Git LFS and submodules are not supported.
+`--repo` defaults to the current directory, `--commit` to `HEAD` and `--tree` to
+`HEAD^{tree}`; pass them to enroll something else. Before anything is signed, the client
+checks that the tree belongs to the commit, that the commit is pushed, that a `Dockerfile`
+is at the repository root (and `LICENSE` and `LICENSES.md` when the competition requires
+them: `list` shows it), that the tree has no symlinks or submodules, and that it fits in
+512 MiB. `--skip-local-checks` skips these checks; it
+changes nothing about what the evaluator enforces.
 
-**One entry per operator.** A competition pays each operator once. Entries that share a
+The request body is only `{repo_url, commit_sha, tree_sha}` (plus `replace`) and is signed with your
+**hotkey** (your coldkey is never used). The validator verifies the signature and that
+the hotkey is registered on the subnet, and reads its alpha stake from the chain, never
+from your request. One entry per hotkey per competition. `list` shows every manifest,
+stake floor and allowed repository host; the schedule of each competition is on the hub
+and in the Discord announcement. Git LFS and submodules are not supported.
+
+### Stake and registration
+
+The floor is the larger of the manifest's
+`minimum_alpha_stake` and the validator's `hotkey_auth.min_enroll_alpha_stake`; `list`
+prints it (500 alpha in every competition so far). What counts is the alpha staked on the
+signing hotkey on this subnet, from any coldkey, as the chain registry reports it. It is
+checked when you enroll, again on every `--replace`, and **once more when entries are
+finalized** (the manifest's `finalization_time`, 24 h after the enrollment deadline in every
+competition so far): an entry whose hotkey holds less than the floor at that moment is
+rejected (from competition 006 on; until 2026-11-16 stake was checked only at enrollment).
+Keep the stake in place until finalization. While enrollment is open, `status` and the hub
+warn when your current stake is below the floor, so you can top it up in time. After
+finalization, stake is not checked again. The
+hotkey must still be registered when the result is applied, or the entry is left out of
+the ranking. Competitions need no server, advertised IP or running miner: enrollment and
+evaluation never connect to any machine of yours. If the hotkey does advertise an IP on
+chain, that IP counts for [One entry per operator](#one-entry-per-operator).
+
+### Changing or withdrawing your entry
+
+Until the enrollment deadline:
+
+```
+# point your entry at a new commit: same entry, as often as you like, the last one counts
+python /path/to/miner-vidaio/scripts/competition_enroll.py enroll --replace \
+    --url https://95.133.254.122/competitions --competition-id <id> \
+    --repo-url https://github.com/<you>/<repo>.git \
+    --wallet-name <coldkey name> --wallet-hotkey <hotkey name>
+
+# withdraw: final, this hotkey cannot enter this competition again
+python /path/to/miner-vidaio/scripts/competition_enroll.py withdraw --yes \
+    --url https://95.133.254.122/competitions --competition-id <id> \
+    --wallet-name <coldkey name> --wallet-hotkey <hotkey name>
+
+# your own entry in full (signed), or anyone's public summary
+python /path/to/miner-vidaio/scripts/competition_enroll.py status \
+    --url https://95.133.254.122/competitions --competition-id <id> \
+    --wallet-name <coldkey name> --wallet-hotkey <hotkey name>
+python /path/to/miner-vidaio/scripts/competition_enroll.py status \
+    --url https://95.133.254.122/competitions --competition-id <id> --hotkey <ss58>
+```
+
+`--replace` swaps the repository, commit and tree of the same entry in place, after the
+same local checks and the same stake check as `enroll`; `enroll` without it is refused
+once the hotkey has an entry. A withdrawn entry shows as REJECTED with the reason
+"withdrawn by the miner". After the deadline nothing can be changed: the evaluator fetches
+exactly the commit and tree your entry holds at that moment, and later pushes change
+nothing. Do not enroll a second hotkey to get a new version in: it is a second entry of
+the same operator (below).
+
+### Checks before the deadline
+
+While enrollment is open the evaluator fetches every entry
+version the way production does, with its own reader credentials, and checks it: the
+repository is readable, the commit and tree match, the tree is safe (no symlinks, special
+files or submodules) and within the size limit, a `Dockerfile` is at the root (and
+`LICENSE` and `LICENSES.md` when the competition requires them), and your hotkey still
+holds the stake floor. It checks within minutes of an `enroll` or `--replace`, then
+every 6 hours, and every hour in the last 24 hours before the deadline. When the operator
+has turned it on, it also runs a trial build of your image on the real builder (no
+evaluation data, no GPU). Results show in `status` (with the full error text for your own
+entry) and on the hub. These checks only **warn**; they never reject an entry. The rules
+that lose an entry after the deadline ([checklist](#checklist-what-loses-you-a-clip-a-batch-or-the-whole-entry))
+are unchanged, so act on a warning before the deadline: fix it, push, and `--replace`.
+
+### Which version is enrolled
+
+The public competition view (the hub, and
+`GET https://95.133.254.122/competitions/v1/competitions/<id>`) lists each entry's
+`entry_commitment`: the sha256 of `competition_id`, hotkey, `repo_url`, `commit_sha` and
+`tree_sha`, joined by newlines with no trailing newline. Check yours:
+
+```
+printf '%s\n%s\n%s\n%s\n%s' <competition id> <hotkey ss58> <repo url> <commit sha> <tree sha> | sha256sum
+```
+
+The same view shows `paused` while an operator has paused the competition.
+
+### One entry per operator
+
+A competition pays each operator once. Entries that share a
 coldkey, an advertised IP, a repository account (the `<owner>` in
 `https://github.com/<owner>/<repo>`, whatever the repository), a source tree (the enrolled
 `tree_sha`, so forks of one solution) or a byte-identical output matrix count as one
 operator: only the lowest uid among them can hold a ranked, paid place, and the others
-are excluded from the payout. Extra hotkeys therefore never add
-places; enroll your best entry once.
+are excluded from the payout. An entry built from the same source as an entry with a
+lower uid is taken out with that reason, and the lower uid is kept. Near-duplicates (one
+solution with small changes, entered from separate keys, accounts or trees) are reviewed
+by an operator and treated the same way. Teams may share ideas and work together, but a
+team enters its solution once and splits the reward itself. Extra hotkeys never add
+places: to change your entry, `--replace` it.
 
-**Use a private repository.** Enrollment names a repository, a commit and a tree; it does
+### Use a private repository
+
+Enrollment names a repository, a commit and a tree; it does
 not prove who wrote the code. Anything in a public repository can be copied, or even
 enrolled as-is by someone else, before the deadline. To let the evaluator read a private
 GitHub repository, add the machine user **`sn85competitionreader-collab`** under
 Settings → Collaborators. It is an ordinary account, not a GitHub App, and invitations
 are accepted automatically within a few minutes. GitHub only offers write access for
-collaborators on personal repositories; the reader never pushes, it fetches exactly the
-commit you enrolled (once for the sealed archive, once for the build). If you want strict
-read-only access, keep the repository in a free GitHub organization and add the reader as
-an outside collaborator with the Read role. Keep the reader invited until the builds are
-announced as done; an entry whose repository cannot be fetched cannot be evaluated.
-Evaluation is pinned to the enrolled commit and tree, so later pushes change nothing, and
-an enrollment cannot be edited: check the commit before you send it
-(`git rev-parse <commit>^{tree}` prints the tree SHA).
+collaborators on personal repositories; the reader never pushes, it only fetches: during
+enrollment for the checks above, and after the deadline the exact commit your entry holds
+(once for the sealed archive, once for the build). If you want strict read-only access,
+keep the repository in a free GitHub organization and add the reader as an outside
+collaborator with the Read role. Invite it before you enroll, so the first check can read
+the repository, and keep it invited until the builds are announced as done; an entry
+whose repository cannot be fetched cannot be evaluated. Do not force-push over, rename or
+delete the enrolled commit before then.
 
-**Try it first.** `examples/competition_contenders/` ships two contender families you
-can copy: the GPU template, and `cpu_compression/` (x264, x265, VP9, SVT-AV1 fixed and a
-quality-searching SVT-AV1) with `materialize_cpu.py`. The header of
-`cpu_compression/run.sh` states the full run contract; you can run it locally against
-any folder of sha256-named clips before you enroll.
+## Building and testing an entry
 
-**Practice clips and past data.** A public practice pack (eight lossless clips: AI-generated,
-animation, screen recording, archive film and space footage, with odd frame sizes and frame
-rates) is attached to the
-[`practice-pack-001` release](https://github.com/vidAio-subnet/miner-vidaio/releases/tag/practice-pack-001)
-of the public miner repository. It is similar in kind to competition content but shares no
-clip with any hidden set. Every inference clip the validator has scored is public as well,
-with each miner output, the released pristine source and the full score packet, in the
-evidence bucket `https://vidaio-sn85-evidence.s3.eu-central-1.amazonaws.com` (anonymous
-read, no listing). Start from `finalized/epoch=<N>/log.json` (first epoch 24920; epoch `N`
-closes at block `8994622 + 360 * (N - 24920)`), follow `audit_manifest.per_uid` to each
+### Start from an example
+
+`examples/competition_contenders/` ships a starting point for every track (the
+[track sections](#tracks) say what each one does):
+
+| Track | Start from |
+|---|---|
+| compression | `cpu_compression/` (x264, x265, VP9, SVT-AV1 fixed and a quality-searching SVT-AV1) with `materialize_cpu.py`; the GPU `template/` with `materialize.py` |
+| streaming compression | `streaming_example/` |
+| faithful upscaling | `upscaling_example/` |
+| generative upscaling | `generative_upscaling_example/` |
+| object removal | `removal_example/` |
+| frame interpolation | `interpolation_example/` |
+
+`removal_example/`, `interpolation_example/`, `streaming_example/` and
+`upscaling_example/` carry a `test_local.py` self-test that needs no Docker. The header
+of `cpu_compression/run.sh` states the full run contract; you can run it
+locally against any folder of sha256-named clips before you enroll. Before you pin a
+commit, `python scripts/competition_precheck.py <repo> --commit <sha>` checks the exact
+commit against the entry-losing rules of the [checklist](#checklist-what-loses-you-a-clip-a-batch-or-the-whole-entry)
+(add `--commercial` where the [licence rules](#licences) apply).
+
+### Practice clips and past data
+
+Every competition comes with a public practice pack
+(clips in the format of its hidden items; recent packs add reference scores and
+`score_practice.py`, which runs the validator's scorer), attached to a
+`practice-pack-<NNN>` release on the
+[releases page of the public miner repository](https://github.com/vidAio-subnet/miner-vidaio/releases).
+A pack is similar in kind to its competition's content but shares no clip with any hidden
+set. Scored data is public as well, with each input, output, released source and full
+score packet, in the evidence bucket `https://s3.hippius.com/vidaio-sn85-evidence`
+(anonymous read, no listing; on Hippius since 2026-10-05, before that on AWS). Start from
+`finalized/epoch=<N>/log.json` (first epoch 24920; epoch `N` closes at block
+`8994622 + 360 * (N - 24920)`), follow `audit_manifest.per_uid` to each
 `audit_bundle/<aa>/<bb>/<digest>`, and the bundle names the `challenge_input`,
 `miner_output`, `released/reference_original` and `score_packet` objects under the same
 `<kind>/<aa>/<bb>/<digest>` layout.
 
-**Checklist: what loses you a clip, a batch or the whole entry.** Every limit below is
-enforced by code, the same for everyone, and an enrollment cannot be edited afterwards.
+## Sandbox and limits
+
+What the code guarantees every contender of a competition, and
+the field that sets each value:
+- *CPU and memory:* `sandbox_resources.cpu` CPU cores and `sandbox_resources.memory_mb` MiB
+  of RAM, reserved for your sandbox and capped at the same values. A `run.sh` killed for
+  running out of memory is scored as a non-zero exit (below).
+- *GPU:* one GPU per sandbox, of the type the manifest's `allowed_gpus` names (Modal's
+  names, for example `L4`, `L40S`, `A100-80GB`). A manifest with a speed term names exactly
+  one type, so every contender runs on the same one. Builds get no GPU.
+- *Batches:* one `run.sh` call receives up to `evaluation_batch_size.max` clips and must
+  exit within `sandbox_resources.batch_timeout_seconds` of wall-clock time. The clock starts
+  when `run.sh` starts inside an already running sandbox and stops when it exits: image pull
+  and sandbox start-up are not counted; model loading and everything else `run.sh` does is.
+  A timeout or a non-zero exit scores the whole batch zero. An operator can only raise
+  these values, for everyone, by a public execution amendment.
+- *Fresh sandbox:* every batch runs in a new sandbox started from your image. Nothing you
+  write survives to the next batch and nothing is warm: caches, compiled kernels and loaded
+  models start cold in every batch.
+- *Network and environment:* no network at run time (builds have network); no environment
+  variables and no secrets; your `ENTRYPOINT`/`CMD` are ignored.
+- *Files:* the inputs sit alone in their folder; treat it as read-only. Write outputs only
+  into the output folder: at most 512 MiB per file and 2 GiB in total at any moment, at most
+  4096 entries (validator settings `orchestrator.sandbox_output_max_bytes`,
+  `sandbox_batch_output_max_bytes`, `modal_max_output_entries`), and at most 8 MiB of
+  stdout plus stderr (`sandbox_log_max_bytes`). Scratch goes to `/tmp`, which is local to
+  your sandbox and empty at the start of every batch.
+- *Build:* the image must build within `orchestrator.build_timeout_seconds` (1800 s) and be
+  at most the manifest's `container_size_limit_gb`. A build gets `build_retry_attempts` (2)
+  tries; only a failure of your own Dockerfile or context marks the entry BUILD_FAILED, and
+  an infrastructure failure halts the competition instead.
+- *Checkout:* the files of the enrolled commit, without `.git`, take at most 512 MiB
+  (`orchestrator.git_checkout_max_bytes`).
+
+Not pinned by the code, so detect it at run time instead of assuming it: the CPU model and
+generation (each batch runs on whichever host is free, so it can change from batch to
+batch) and instruction sets such as AVX-512; how many CPUs the OS reports (read `nproc` or
+`os.sched_getaffinity` and set thread counts explicitly); the NVIDIA driver and the highest
+CUDA version it supports (check `nvidia-smi` or `torch.cuda.is_available()` at start, and
+fall back loudly); the size of `/tmp` and `/dev/shm`, and whether `/tmp` counts against the
+memory limit (plan as if it does); the process and thread limit. If an operator has to move
+a running competition to the fallback GPU host (`remote_docker`, listed under
+`amendments`), runs get the Docker runner's limits: a read-only root filesystem, `/tmp` as
+a tmpfs of `orchestrator.sandbox_tmpfs_size` (256 MB by default) and at most
+`orchestrator.sandbox_pids_limit` processes (256 by default), the same as the local Docker
+runner. An entry that keeps its scratch small runs on both.
+
+## Checklist: what loses you a clip, a batch or the whole entry
+
+Every limit below is
+enforced by code and the same for everyone. Nothing can be changed after the enrollment
+deadline; before it, fix the entry and `--replace` it.
 
 *The whole entry is lost when:*
 - the repository cannot be fetched after the deadline (reader not invited, repository deleted
-  or renamed, commit not pushed), or the fetched commit/tree does not match what you enrolled;
-- the tree contains `.gitmodules`, symlinks or special files, or is larger than 512 MiB. Keep
-  large weights out of Git: download them in the Dockerfile (builds have network) and verify a
-  checksum;
+  or renamed, commit not pushed or force-pushed away), or the fetched commit/tree does not
+  match what your entry holds;
+- the tree contains `.gitmodules`, symlinks or special files, or its files (without `.git`)
+  take more than 512 MiB. Keep large weights out of Git: download them in the Dockerfile
+  (builds have network) and verify a checksum;
 - the image does not build. `Dockerfile` must be at the repository root and build for
   linux/amd64 within 30 minutes; the image may be at most the manifest's
-  `container_size_limit_gb` (measured after the build: the apparent size of every file
-  in the image, 1 GB = 10^9 bytes). Prefer prebuilt encoder binaries to compiling from
-  source;
+  `container_size_limit_gb` (at most 40 GB; measured after the build: the apparent size of
+  every file in the image, 1 GB = 10^9 bytes). Prefer prebuilt encoder binaries to compiling
+  from source;
 - the Dockerfile uses something the sandbox builder does not support. The builder is not
   Docker/BuildKit: `ADD` is rejected (use `COPY`, or download inside a `RUN`), `USER` is
   ignored, and an image reference in `FROM` or `COPY --from` must carry a tag **or** a
@@ -318,13 +433,23 @@ zero.
   sharpening, contrast or colour tricks that inflate VMAF zero the clip.
 Outputs are compared after conversion to 8-bit 4:2:0, so 10-bit encodes are fine.
 
-**What your code may do.** Anything that fits the contract and the compute envelope.
+## What your code may do
+
+Anything that fits the contract and the compute envelope.
 Analysing each input and choosing the encoder, preset, filters or GPU path per clip,
 encoding several candidates and keeping the best, and measuring VMAF yourself to search
 for the smallest file that clears the gate are all allowed and expected; clips differ a
 lot (live action, animation, AI-generated footage, film grain, screen recordings), so a
 single fixed setting will do badly somewhere. Everything you need must be inside the
 image: a run has no network.
+
+**No banned settings.** There is no list of banned encoder or model settings: stock tunes
+(including VMAF-oriented ones), pre-filters and custom models are all allowed. The per-clip
+gates and the scorer decide, the same for everyone; a clip that fails a gate scores zero, so
+keep a margin instead of sitting just under a limit. What is forbidden is fitting an entry to
+the sealed evaluation set: an entry must compute its output from the input it is given, and
+shipping copies of footage to look the answer up gets the entry rejected and its operator
+barred (see the content rules in the [track sections](#tracks) below).
 
 **Two things that cost real entries a clip.** (1) Check your encoder on odd frame sizes.
 Distribution packages can be old: the SVT-AV1 1.7 shipped with Ubuntu 24.04 crashes on
@@ -335,7 +460,23 @@ missing. (2) Leave a margin above the VMAF gate. The scorer measures the full cl
 its own pinned libvmaf build and model; your measurement can differ by a few tenths, and
 a clip below the gate scores zero.
 
-**Object-removal competitions (track `removal`).** The contract above is unchanged
+## Tracks
+
+Every track uses the same `run.sh` contract and the limits above; the items, the
+per-clip rules and the score differ by track, and generative upscaling also changes the
+sandbox. Check the manifest of the competition you enter for its track and scoring mode.
+
+### Compression (track `compression`)
+
+Each clip is re-encoded smaller and scored with the compression formula under
+[How competitions work](#how-competitions-work): fewer bytes at a VMAF above the
+manifest's `vmaf_threshold`, measured against the input you received. The per-clip gates
+are in the [checklist](#checklist-what-loses-you-a-clip-a-batch-or-the-whole-entry);
+start from `examples/competition_contenders/cpu_compression/` or the GPU `template/`.
+
+### Object removal (track `removal`)
+
+The contract above is unchanged
 (same `run.sh`, same limits); only the items and the score differ.
 - *Input:* each item is ONE Matroska file (named by its sha256, no extension) with two
   video streams. Stream 0 is the clip with an object in it (FFV1, 4:2:0, at most
@@ -370,7 +511,9 @@ a clip below the gate scores zero.
   that implements the contract (it is the free fill, so it scores about zero) with a
   local self-test.
 
-**Frame-interpolation competitions (track `interpolation`).** The contract above is
+### Frame interpolation (track `interpolation`)
+
+The contract above is
 unchanged (same `run.sh`, same limits); only the items and the score differ.
 - *Input:* each item is ONE Matroska file (named by its sha256, no extension) with one
   video stream (FFV1, 4:2:0, at most 1920×1080, constant frame rate): a genuine
@@ -397,22 +540,9 @@ unchanged (same `run.sh`, same limits); only the items and the score differ.
   zero; an item also scores zero on a frame-count, size or kept-frame violation. The code
   is `vidaio/scoring/interpolation.py`, `vidaio/scoring/interpolation_formula.py` and
   `vidaio/scoring_worker/interpolation_backend.py`.
-- *Speed counts* when the manifest's `result_rules` carry a speed term (all four
-  `speed_*` fields; frame interpolation, faithful upscaling and streaming compression). Every `run.sh` call is timed by the
-  validator's runner, from start to exit, on the single pinned GPU type and the anchored
-  CPU/RAM envelope (`allowed_gpus` has one entry), and the times are added over all your
-  batches. A batch your solution fails (non-zero exit, timeout, unsafe output) counts its
-  full `batch_timeout_seconds` (as raised by any execution amendment), so failing fast
-  never buys speed. When a batch's Sandbox is stopped and the batch is rerun, the stopped
-  attempt counts too, up to the time of the run that completed, so bringing your own
-  Sandbox down never buys a faster run. Model loading inside `run.sh` counts too. With `spf` = total seconds / `speed_inserted_frames`:
-  `speed_score = clamp(log(speed_slow_spf / spf) / log(speed_slow_spf / speed_fast_spf), 0, 1)`
-  is 1 at or under `speed_fast_spf` (for example 1/30 s per inserted frame: real time for
-  30 to 60 fps) and 0 at or over `speed_slow_spf`, and every 2x speed-up is worth the same.
-  Your competition score is `mean item score x (1 - speed_weight + speed_weight x
-  speed_score)`; the crown and podium bars apply to that number. The per-batch times are
-  committed with the result (attested by the validator that ran the sandboxes) and the
-  auditor re-derives the score from them.
+- *Speed counts* when the manifest's `result_rules` carry a speed term
+  ([Speed](#speed)), with `speed_inserted_frames` = the inserted frames over the hidden
+  set.
 - *Content:* the hidden clips are genuine high-frame-rate footage with real motion (no
   duplicated or static frames), with easy and hard cases mixed: camera pans, fast
   subjects, occlusions, thin structures and fine texture. Methods that estimate motion
@@ -420,50 +550,15 @@ unchanged (same `run.sh`, same limits); only the items and the score differ.
   frames from the input it is given: shipping video, frames or any other copy of existing
   footage in the image to look the answer up is not a solution, and an entry found doing
   it is rejected and its operator barred from later competitions.
-- *Licences: commercial use only.* The winning solution runs on the VidAIO website, so
-  everything an entry ships (code, libraries, model weights) must be under a licence that
-  allows commercial use (Apache-2.0, MIT, BSD, ISC, MPL-2.0, CC0/Unlicense, CC-BY-4.0, or
-  GPL/LGPL such as ffmpeg).
-  Non-commercial, research-only, no-derivatives, AGPL/SSPL or unlicensed components are
-  refused, including fine-tuned, merged, adapted or distilled versions of such models.
-  Weights that a model's authors publish from its repository (linked in its README or
-  release) take that repository's licence. A file the image ships but your solution
-  never loads at run time is not judged.
-- *Training data: commercial training only.* Everything you train, fine-tune or tune your
-  entry on (weights, thresholds, filter strengths or any other setting) must allow
-  training a model for commercial use: your own footage, CC0 or CC-BY material, or
-  synthetic data from a generator whose terms allow training other models on its outputs
-  (for example Apache-2.0 Wan 2.x). Non-commercial (CC BY-NC, CC BY-NC-SA), research-only
-  or no-derivatives datasets, and outputs of models whose licence restricts training on
-  them, are not allowed. LTX-2.x is one: its licence (Attachment A, item 18) forbids using
-  its outputs to train, improve or fine-tune another model for commercial use, and
-  §3.2 makes models trained on its outputs LTX derivatives. You may still use such
-  material to evaluate your entry (to measure how it scores), never to train or tune it.
-  Pretrained weights you build on are judged by their own published licence, not by the
-  data their authors trained them on. We cannot fully verify training data, so keeping it
-  compliant is your responsibility; an entry whose weights or settings come from data
-  that breaks this rule is not accepted.
-  Your own code must be released under Apache-2.0 or MIT (a `LICENSE` file at the
-  repository root at the enrolled commit), and a `LICENSES.md` at the root must list
-  every third-party component (name, source URL, licence, location in the repository).
-  What is reviewed must be what is built, so every file your Dockerfile downloads must be
-  pinned by content: check its sha256 in the same `RUN` step
-  (`echo "<sha256>  model.pth" | sha256sum -c -`), or use a Hugging Face commit revision,
-  a git commit, `pip install` with `==` versions or `--require-hashes`, or `apt-get
-  install` with exact versions (`pkg=1.2.3-1`) or from a dated snapshot mirror
-  (`snapshot.debian.org`, `snapshot.ubuntu.com`). An entry with an unpinned download is
-  rejected. `python scripts/competition_precheck.py <repo> --commit
-  <sha> --commercial` flags the common cases.
-  Entries are checked in the 24 h between the enrollment deadline and the start of
-  evaluation; an entry that breaks these rules is rejected then, publicly with the
-  reason, and never scored. A violation found later, until the competition completes,
-  takes the entry out the same way: it leaves the scoring and the result.
+- *Licences:* the [licence rules](#licences) apply (commercial use only, `LICENSE` and
+  `LICENSES.md`, every download pinned by content), and so does the training-data rule.
 - *Start from* `examples/competition_contenders/interpolation_example/`: a complete CPU
   entry that implements the contract (it is the blend, so it scores about zero) with a
   local self-test.
 
-**Streaming compression competitions (track `compression`, streaming scoring).** A
-compression manifest that says `"compression_scoring": "streaming"` scores each clip as a
+### Streaming compression (track `compression`, streaming scoring)
+
+A compression manifest that says `"compression_scoring": "streaming"` scores each clip as a
 streaming rendition: the best quality inside a fixed bitrate budget, not the smallest
 file over a VMAF bar. The contract above is unchanged (same `run.sh`, same limits).
 - *Input:* each item is one lossless clip (FFV1 in Matroska, named by its sha256).
@@ -480,13 +575,18 @@ file over a VMAF bar. The contract above is unchanged (same `run.sh`, same limit
 - *Score:* `(VMAF − 60) / 40`, clamped to [0, 1]. VMAF is measured as for compression (same
   pinned model, the second-model check and the chroma and tone checks against sharpening
   or colour tricks). There is no VMAF threshold: quality is the score.
-- *Speed counts* when the manifest's `result_rules` carry a speed term, as for frame
-  interpolation, with `speed_inserted_frames` = the output frames over the hidden set.
+- *Speed counts* when the manifest's `result_rules` carry a speed term
+  ([Speed](#speed)), with `speed_inserted_frames` = the output frames over the hidden set.
+- *Licences:* the same as the other tracks, as the streaming example's README states: the
+  [licence rules](#licences) apply (commercial use only, `LICENSE` and `LICENSES.md`,
+  every download pinned by content), and so does the training-data rule.
 - The code is `vidaio/scoring/streaming.py` and `vidaio/scoring_worker/streaming_backend.py`.
   Start from `examples/competition_contenders/streaming_example/`: a complete x264 entry
   that measures its own packets, with a local self-test.
 
-**Upscaling competitions (track `upscaling`, faithful scoring).** The contract above is
+### Faithful upscaling (track `upscaling`, faithful scoring)
+
+The contract above is
 unchanged (same `run.sh`, same limits); only the items and the score differ. A manifest
 that says `"upscaling_scoring": "faithful"` is scored as below; check the manifest of the
 competition you enter.
@@ -520,8 +620,8 @@ competition you enter.
   PieAPP or file-size gate applies. The code is `vidaio/scoring/upscaling_faithful.py`,
   `vidaio/scoring/upscaling_faithful_formula.py` and
   `vidaio/scoring_worker/upscaling_faithful_backend.py`.
-- *Speed counts* when the manifest's `result_rules` carry a speed term, exactly as for
-  frame interpolation, with `spf` = total seconds / `speed_inserted_frames`, which for
+- *Speed counts* when the manifest's `result_rules` carry a speed term
+  ([Speed](#speed)), with `spf` = total seconds / `speed_inserted_frames`, which for
   upscaling is the number of output frames over the whole hidden set.
 - *Content:* the hidden originals are private phone footage, 3D renders and AI-generated
   clips (only ones with genuine full-resolution detail), never from public stock sites, and
@@ -534,7 +634,7 @@ competition you enter.
   shipping video, frames or any other copy of existing footage in the image to look the
   answer up is not a solution, and an entry found doing it is rejected and its operator
   barred from later competitions.
-- *Licences:* the frame-interpolation rules above apply unchanged (commercial use only,
+- *Licences:* the [licence rules](#licences) apply unchanged (commercial use only,
   `LICENSE` and `LICENSES.md`, every download pinned by content), and so does the
   training-data rule. In `practice-pack-004`, p01–p07 (VidAIO's own phone footage and
   CC0 Blender renders) may be used for training; p08–p10 were generated with LTX-2.5, so
@@ -543,7 +643,171 @@ competition you enter.
   that implements the contract (it is the Lanczos floor, so it scores about zero) with a
   local self-test.
 
-**Result rules.** A competition may publish its own `result_rules` in the anchored
+### Generative upscaling (track `upscaling`, generative scoring)
+
+A manifest
+that says `"upscaling_scoring": "generative"` asks for a generative AI upscaler: inventing
+plausible detail the degraded input no longer holds is the point, as long as the result
+stays true to the input. The contract is the faithful one above (same `run.sh`, same task
+file `.vidaio-next-upscale-task-<sha256>`, same output rules); the sandbox, the gates and
+the score differ.
+- *Task:* ×2 (960×540 → 1920×1080) and ×4 (480×270 → 1920×1080), portrait mirrored;
+  clips of up to 10 seconds at a constant frame rate up to 60 fps. Return every frame, in
+  order, at exactly the target size, the input's frame count and frame rate, as one H.264,
+  HEVC, VP9 or AV1 stream tagged BT.709 limited range. Encode at high quality (x264 CRF 12
+  or better) within the 512 MiB / 2 GiB caps; the validator may also score your clip after
+  its own light delivery encode (x264 CRF 18), so do not rely on detail that only survives
+  a lossless file.
+- *Sandbox:* one **NVIDIA A100 80 GB** per run (the single entry of the manifest's
+  `allowed_gpus`, Modal `A100-80GB`); the build gets no GPU and must finish within 30
+  minutes; the image may be up to the manifest's `container_size_limit_gb`, **40 GB** for
+  generative competitions, so bake your weights into the image (there is no network at run
+  time). Every `run.sh` call starts a fresh sandbox: your model loads once per batch, and
+  that time counts.
+- *Gates* (a failing clip scores zero): the usual geometry and frame-count checks, plus
+  **low-resolution consistency** (your frames, Lanczos-downscaled back to the input's size
+  and slightly blurred, must match the equally blurred input: at least 28 dB of luma PSNR,
+  or the calibrated floor in the scoring config if higher) and **colour** (the mean CIEDE2000
+  against the original on downscaled frames is at most 6). Invented structure the input does
+  not support, a shifted picture or a colour cast fails a gate. When the manifest's
+  `result_rules` carry `max_failed_item_fraction` (0.1 means 10 %), an entry with more
+  clips at zero than that share ranks with a score of 0 and holds no paid place.
+- *Score:* `0.55 · fidelity + 0.15 · temporal + 0.30 · quality`, each term placed between
+  two anchors published in the scoring config: the weakest of three public baseline
+  upscalers (plain interpolation, a GAN upscaler, a diffusion upscaler) scores 0 on that term
+  and the strongest scores 1 (separately for ×2 and ×4; the values are in the config).
+  *Fidelity* is the mean of `1 − DISTS` and `1 − LPIPS-VGG` against the sealed original on
+  a few sampled **full 1080p frames** (no downscale before the networks). *Temporal* is the
+  original's own warp error divided by yours under the original's optical flow, capped at 1:
+  flicker and boiling texture cost points, and being smoother than the original earns
+  nothing extra. *Quality* is CLIP-IQA (a no-reference metric) relative to the original's
+  own value, **capped at the original + 5 %**: looking sharper than reality earns nothing.
+  Everything runs on CPU, deterministically, with pinned weights, so auditors recompute the
+  same numbers. The code is `vidaio/scoring/upscaling_generative.py`,
+  `vidaio/scoring/upscaling_generative_formula.py` and
+  `vidaio/scoring_worker/upscaling_generative_backend.py`.
+- *Speed counts* when the manifest carries a speed term, exactly as for faithful upscaling
+  (`speed_inserted_frames` = output frames over the whole hidden set; see [Speed](#speed)).
+- *Licences:* **permissive only**. Everything that makes your output, model **code and
+  weights**, must be Apache-2.0, MIT or BSD licensed (for example SeedVR2, FlashVSR,
+  Real-ESRGAN and BasicVSR++ qualify). Conditional or community licences (the CogVideoX
+  licence, the LTX community licence), non-commercial, academic-use-only, territory-restricted
+  and unlicensed code or weights are **not eligible**. GPU runtime libraries in your base
+  image (CUDA, cuDNN, NCCL, TensorRT, under NVIDIA's licence) are not models and are fine;
+  list them in `LICENSES.md`. `LICENSE` and `LICENSES.md` are
+  required and every download is pinned by content, as in [Licences](#licences); the
+  training-data rule applies unchanged, and the content rule above (no shipped copies of
+  existing footage) too.
+- *Start from* `examples/competition_contenders/generative_upscaling_example/`: a GPU
+  skeleton (PyTorch on CUDA, raw-frame pipes, a weight-free stub where your model goes)
+  that builds within the limits; it scores near the floor by design.
+
+## Speed
+
+*Speed counts* when the manifest's `result_rules` carry a speed term (all four
+`speed_*` fields; frame interpolation, faithful and generative upscaling and streaming
+compression). Every `run.sh` call is timed by the
+validator's runner, from start to exit, on the single pinned GPU type and the anchored
+CPU/RAM envelope (`allowed_gpus` has one entry), and the times are added over all your
+batches. A batch your solution fails (non-zero exit, timeout, unsafe output) counts its
+full `batch_timeout_seconds` (as raised by any execution amendment), so failing fast
+never buys speed. When a batch's Sandbox is stopped and the batch is rerun, the stopped
+attempt counts too, up to the time of the run that completed, so bringing your own
+Sandbox down never buys a faster run. Model loading inside `run.sh` counts too. With
+`spf` = total seconds / `speed_inserted_frames` (the inserted frames over the hidden set
+for frame interpolation; the output frames over the whole hidden set for upscaling and
+streaming compression):
+`speed_score = clamp(log(speed_slow_spf / spf) / log(speed_slow_spf / speed_fast_spf), 0, 1)`
+is 1 at or under `speed_fast_spf` (for example 1/30 s per inserted frame: real time for
+30 to 60 fps) and 0 at or over `speed_slow_spf`, and every 2x speed-up is worth the same.
+Your competition score is `mean item score x (1 - speed_weight + speed_weight x
+speed_score)`; the crown and podium bars apply to that number. The per-batch times are
+committed with the result (attested by the validator that ran the sandboxes) and the
+auditor re-derives the score from them.
+
+## Licences
+
+These rules apply to frame interpolation, streaming compression and faithful upscaling;
+generative upscaling applies them with its own stricter licence list (see
+[its section](#generative-upscaling-track-upscaling-generative-scoring)). For any
+competition, `list` shows whether `LICENSE` and `LICENSES.md` are required.
+
+- *Licences: commercial use only.* The winning solution runs on the VidAIO website, so
+  everything an entry ships (code, libraries, model weights) must be under a licence that
+  allows commercial use (Apache-2.0, MIT, BSD, ISC, MPL-2.0, CC0/Unlicense, CC-BY-4.0, or
+  GPL/LGPL such as ffmpeg).
+  Non-commercial, research-only, no-derivatives, AGPL/SSPL or unlicensed components are
+  refused, including fine-tuned, merged, adapted or distilled versions of such models.
+  Weights that a model's authors publish from its repository (linked in its README or
+  release) take that repository's licence. A file the image ships but your solution
+  never loads at run time is not judged.
+- *Training data: commercial training only.* Everything you train, fine-tune or tune your
+  entry on (weights, thresholds, filter strengths or any other setting) must allow
+  training a model for commercial use: your own footage, CC0 or CC-BY material, or
+  synthetic data from a generator whose terms allow training other models on its outputs
+  (for example Apache-2.0 Wan 2.x). Non-commercial (CC BY-NC, CC BY-NC-SA), research-only
+  or no-derivatives datasets, and outputs of models whose licence restricts training on
+  them, are not allowed. LTX-2.x is one: its licence (Attachment A, item 18) forbids using
+  its outputs to train, improve or fine-tune another model for commercial use, and
+  §3.2 makes models trained on its outputs LTX derivatives. You may still use such
+  material to evaluate your entry (to measure how it scores), never to train or tune it.
+  Pretrained weights you build on are judged by their own published licence, not by the
+  data their authors trained them on. We cannot fully verify training data, so keeping it
+  compliant is your responsibility; an entry whose weights or settings come from data
+  that breaks this rule is not accepted.
+- *Your own code and the component list.* Your own code must be released under
+  Apache-2.0 or MIT (a `LICENSE` file at the
+  repository root at the enrolled commit), and a `LICENSES.md` at the root must list
+  every third-party component (name, source URL, licence, location in the repository).
+- *Pinned downloads.* What is reviewed must be what is built, so every file your Dockerfile downloads must be
+  pinned by content: check its sha256 in the same `RUN` step
+  (`echo "<sha256>  model.pth" | sha256sum -c -`), or use a Hugging Face commit revision,
+  a git commit, `pip install` with `==` versions or `--require-hashes`, or `apt-get
+  install` with exact versions (`pkg=1.2.3-1`) or from a dated snapshot mirror
+  (`snapshot.debian.org`, `snapshot.ubuntu.com`). An entry with an unpinned download is
+  rejected. `python scripts/competition_precheck.py <repo> --commit
+  <sha> --commercial` flags the common cases.
+- *When it is checked.* Entries are checked in the 24 h between the enrollment deadline
+  and the start of evaluation; an entry that breaks these rules is rejected then, publicly
+  with the reason, and never scored. A violation found later, until the competition
+  completes, takes the entry out the same way: it leaves the scoring and the result.
+
+### Licence rulings so far
+
+Answers the subnet team has given miners in Discord, applying the
+rules above; each binds every entry the same way. They were given under the commercial-use
+rules of frame interpolation and faithful upscaling: where a competition's own rules are
+stricter (generative upscaling: model code and weights Apache-2.0, MIT or BSD only), those
+win.
+- *Weights linked by the original authors* (2026-10-06): weights a model's authors publish
+  from its repository (linked in its README or release) take that repository's licence; for
+  example IFRNet's checkpoints are MIT, like its code.
+- *Files never loaded* (2026-10-16): a checkpoint the image ships but the solution never loads
+  at run time is not judged.
+- *Non-commercial training data* (2026-10-26): CC BY-NC-SA data such as Inter4K cannot be
+  trained on, even when the weights are fine-tuned from a permissive base. Fine-tuning a
+  permissively licensed base (for example Real-ESRGAN, BSD) on compliant data and releasing
+  your weights under MIT or Apache-2.0 is fine.
+- *Accepted training sources* (2026-10-26, 2026-10-27): your own Wan 2.2 clips (Apache-2.0),
+  the YouTube UGC dataset (CC BY 4.0) and Netflix Open Content titles such as Meridian (CC BY
+  4.0 on Netflix's own Open Content site); credit each in `LICENSES.md`. A Wan clip is fine
+  even when you wrote its prompt after looking at restricted clips (2026-10-28): what is not
+  allowed is training on restricted pixels.
+- *Evaluation-only material* (2026-10-26, 2026-10-27): you may run restricted clips (for
+  example the LTX-generated practice clips) to see how your entry scores and to compare
+  builds. Training on them, or fitting a setting to them (such as picking a sharpening
+  strength), is not allowed. The test: would the entry you ship be the same without the
+  restricted clips?
+- *CC BY-SA training data* (2026-10-28): accepted, since it allows commercial use. Credit each
+  source in `LICENSES.md` plus an attribution file, and keep your own code under Apache-2.0 or
+  MIT.
+- *NVIDIA TensorRT runtime* (2026-10-28): accepted. NVIDIA's licence allows commercial use and
+  redistribution of the runtime on NVIDIA GPUs, like the cuDNN/cuBLAS libraries PyTorch ships.
+  List it in `LICENSES.md` (version, licence, source) and pin it like any other download.
+
+## Result rules
+
+A competition may publish its own `result_rules` in the anchored
 manifest: `crown_margin` (the relative win over the rerun baseline that makes the result
 a CROWN), `crown_min_score` (an absolute score the winner must also reach to crown),
 and `podium_min_margin` / `podium_min_score` (what a contender must reach to hold a paid
@@ -560,402 +824,19 @@ baseline** (its manifest has no `baseline` block): it must then anchor both
 reach `podium_min_score` to hold a paid place, and the first place crowns when it also
 reaches `crown_min_score`.
 
-Competition payouts use the latest globally applied result for seven days (a newer
-result replaces it). Since tokenomics v3 (2026-09-27) inference earns nothing and a
-result pays **100 % of miner emissions** by default: a result that does not meet the
-crown rule opens a **PODIUM** window whose pot is split 50/24/13/8/5 over the top five
-qualifying places; a result that meets it opens a **CROWN** window split 90/4/3/2/1.
-Unfilled places go to the filled ones in proportion; a result with no qualifying
-contender closes the window and the subnet burns until the next result; a deregistered
-paid hotkey sends its share to the sink, and an entry whose hotkey is not registered when
-the result is applied is left out of the ranking.
+## Results and what is published
 
-**Tokenomics v4 (from the frame-interpolation competition on).** Competitions run every
-two weeks and a result pays for **two weeks** (336 hours), so each result covers the time
-until the next one. A gap with no active result no longer burns everything: **50 % burns
-and 50 % goes to the licensing treasury**, a registered hotkey that pays licensing fees to
-winners whose solutions run on the VidAIO website. While a window is active the treasury
-keeps **0.5 %** so it stays registered, and the window's pot and split apply to the other
-99.5 % (a 90/4/3/2/1 crown pays 89.55/3.98/2.985/1.99/0.995 % of emissions). Every epoch
-log names the treasury hotkey it pays (`treasury_hotkey`), and auditors check it against
-their own policy; an unregistered treasury's share burns. Every competition anchors these values in its
-manifest (`result_rules`), so check the manifest of the competition you enter: the pot
-and the split may differ from the defaults. When a competition has a baseline, the
-executable comparison floor is that archived baseline rerun on the same hidden matrix.
-Every contender uses the same enrollment, scoring, audit, and payout path.
-`tokenomics.competition_emissions_enabled` is retained only as an emergency off
-switch; emissions-on is the normal state.
-
----
-
-## Requirements
-
-- **Hardware**: the reference backends are plain ffmpeg/x264 — any
-  ffmpeg-capable CPU box works. A GPU is required only if YOUR approach needs
-  one (learned restoration, super-resolution, etc.); nothing in the protocol
-  assumes it. `ffmpeg` on `PATH` (the reference miner shells out to it;
-  `miner.ffmpeg_path`).
-- **Network**: your task endpoint must be reachable by validators (and the
-  gateway, if you serve organic traffic). Production validators accept globally
-  routable literal axon IPs; real `axon.port` is preferred over the configured fallback,
-  and IPv6 literals are bracketed correctly.
-- **HTTPS on the advertised port, with a publicly trusted certificate.** Mainnet
-  validators dial every miner as `https://<axon-ip>:<axon-port>` with normal
-  certificate verification (`validator.miner_url_scheme=https` fleet-wide). A port
-  that answers plain HTTP, or presents a self-signed certificate, fails the
-  `GET /warrant` probe every round — the authority logs
-  `warrant probe failed; track stays unknown` and the miner is **skipped, never
-  dispatched to, never scored**. The certificate must be valid for the literal IP
-  you advertise (Let's Encrypt issues short-lived IP certificates; Caddy or certbot
-  can automate renewal — make the renewal hook restart the TLS edge). Verify from
-  outside the box with `curl https://<ip>:<port>/warrant` **without** `-k`; the
-  reply must be `{"track": "compression"}` or `{"track": "upscaling"}`.
-- **Serving hotkey wallet**: artifact protocol v2 signs every response. The miner role
-  loads its own hotkey-only wallet through `chain.*`; `chain.validator_hotkey` and
-  `miner.artifact_hotkey` must both equal the registered hotkey advertised for this
-  endpoint. Never put a validator or coldkey wallet in the miner service.
-  Create a FRESH hotkey per mining identity (`btcli wallet new_hotkey`),
-  register it on the subnet (`btcli subnet register --netuid 85`), and
-  advertise your exact public endpoint (`scripts/advertise_miner.py` — the
-  metagraph must read back the same literal IP and port you serve on). The
-  coldkey stays offline; only the hotkey-half lives on the mining box.
-- **Registered-hotkey auth (P2)**: competition enrollment is SELF-SIGNED — the
-  enrolling hotkey signs its own enrollment request (Scheme A headers, see
-  `vidaio.services.hotkey_auth.sign_request_headers`), must be registered on
-  the subnet, and must clear the configured minimum alpha stake. An operator
-  can no longer enroll a hotkey on its behalf; a signer may only enroll itself.
-- **Disk**: task work dirs under `miner.work_dir`, swept after
-  `task_dir_ttl_seconds` (900 s default). Inputs up to 2 GiB
-  (`miner.max_input_bytes`).
-- **Ingress clock**: the server allows 60 seconds by default (configurable only within
-  `(0, 300]`) from admission through complete upload staging/fsync. Slow uploads receive
-  HTTP 408 and their partial task directory/capacity slot are released.
-
-### The wire contract you must serve
-
-Authoritative source: [`vidaio/services/protocol.py`](../vidaio/services/protocol.py).
-Two routes, on your API port (default **8300**):
-
-**`POST /v1/task/artifact`** — bounded path-free byte exchange:
-
-```jsonc
-// canonical JSON before base64url encoding into X-Vidaio-Task-Metadata
-{
-  "task_id": "<validator-authored id>",   // echo it back EXACTLY
-  "track": "compression",                  // or "upscaling"
-  "input_digest": "<sha256 hex, 64 chars>",
-  "params": {"...": "track params, e.g. upscale factor / bitrate cap"},
-  "deadline_seconds": 300.0                // seconds before you are scored absent
-}
-```
-
-The request body is the raw input stream (`application/octet-stream`, with an exact
-`Content-Length` and a running byte counter). Metadata is capped at 4 KiB before encoding
-so it fits normal proxy header limits. Production uses artifact version `2`: alongside
-the metadata header it carries `X-Vidaio-Validator-Hotkey`,
-`X-Vidaio-Miner-Hotkey`, request timestamp, 128-bit nonce, input size, and request
-signature. The canonical signature binds all task metadata, input digest/size, both
-identities, timestamp, and nonce. Before reading the body, the miner checks that the
-request names itself, verifies the signature, refreshes chain state, and requires exactly
-one current neuron with validator permit for the signer. A stale/duplicate nonce is
-rejected. Both the global live replay cache and a smaller per-validator quota are hard
-bounds; exhausting either returns 503 `artifact_auth_capacity` instead of evicting an
-unexpired entry or allowing one validator to consume all capacity.
-Every miner start also fences timestamps at
-`start_time + artifact_request_future_skew_seconds`. A request at or below the fence is
-rejected before body ingress with 425 `artifact_auth_starting`; retry after the bounded
-roughly `future_skew + 1 second` startup blackout using a fresh timestamp and nonce. That
-prevents replay of a still-fresh request captured before an in-memory cache restart.
-The cache is process-local, so one miner hotkey must terminate at one ingress process.
-Multiple replicas sharing a hotkey behind a load balancer are unsafe until a shared
-replay store exists: the same captured request could land once on each replica.
-
-The response body is the raw output stream. Headers carry version 2, exact task id,
-output sha256, output size, processing seconds, miner hotkey, and response signature. The
-signature binds the complete signed request plus output digest/size/processing time; the
-validator verifies it against the chain-attributed miner hotkey before publishing the
-download. Unsigned artifact v1 exists only behind
-`miner.allow_unsigned_artifact_v1: true` in isolated report/tests and production forbids
-that switch.
-
-**`GET /warrant`** — `-> {"track": "compression" | "upscaling"}`, your pool
-declaration. JSON absolute-path `POST /v1/task` and its pre-versioning `/task` alias are
-DEPRECATED local-test compatibility routes. They are absent by default, require
-`miner.enable_legacy_path_routes: true` in a test fixture, and that opt-in is rejected
-in production.
-
-Obligations that get you zeroed or skipped if violated:
-
-- **Echo `task_id` exactly.** The validator authors it
-  (`"{challenge_id}:{uid}"`); any other id in your response is zeroed
-  (`task_id_mismatch`).
-- **Digest discipline.** Verify `input_digest` over the bytes received. Return the real
-  output sha256 header; the validator recomputes it while streaming, also verifies task
-  id/size/version, and atomically publishes only a fully bound response.
-- **Deadlines.** `deadline_seconds` (default 300 s) is your budget; the
-  validator's own request timeout (`miner_request_timeout_seconds`, 300 s
-  default) hard-bounds it. A timeout is a
-  zero-scored empty response. It cannot enlarge the miner's independent
-  `artifact_ingress_timeout_seconds` upload cap.
-- **Capacity honesty.** Over capacity, answer `429 busy`
-  (`miner.max_concurrent_tasks`) — the round scores you absent, which beats
-  queueing unbounded ffmpeg jobs and timing out on everything.
-- **Auth and public-edge protection.** `miner.api_token` / `X-Miner-Token` is for a
-  controlled caller fleet. Do not share one secret subnet-wide with permissionless
-  validators or miners. A permissionless miner leaves that optional extra bearer unset;
-  protocol v2 authenticates current validators and miner responses by hotkey. Keep the
-  endpoint behind a hardened reverse proxy/edge enforcing request/connection-rate,
-  timeout, and network-abuse limits. Set the fleet-wide
-  `validator.miner_url_scheme=https` only when every advertised literal IP presents a
-  valid public certificate; otherwise the public hop is explicitly HTTP (artifact-v2
-  still authenticates both sides). The miner's own signature/replay/body/concurrency
-  caps remain mandatory.
-- **Cleanup.** The canonical miner deletes its task directory after the output stream;
-  TTL is crash recovery. The validator deletes its private download after scoring and
-  archival on every success/failure/cancellation path.
-
----
-
-## Running the reference miner
-
-The public build runs the miner role against the real chain:
-
-```bash
-python scripts/service_entrypoint.py reference-miner
-```
-
-Registration, endpoint advertisement, and hardening are covered in the
-[Mainnet](#mainnet) section below.
-
-> **Chainless simulation.** The development tree carries a one-command local
-> stack (a chain simulator plus the full scoring/audit topology) used to
-> exercise the whole loop offline — challenge production → your encode → three
-> libvmaf runs → central EWMA fold → epoch-log finalize+anchor → validator
-> converge → auditor recompute. That tooling is a development tool and is not
-> included in this repository; the public entrypoint refuses simulator modes
-> and runs the miner only against the real chain.
-
-Miner config keys (section `miner`, schema `vidaio/miner/config.py`, env
-override `VIDAIO__MINER__<KEY>`):
-
-| Key | Default | Meaning |
-|---|---|---|
-| `http_port` / `metrics_port` | 8300 / 9106 | API and health/metrics ports |
-| `warrant_track` | `compression` | THE pool this identity competes in |
-| `compress_crf` / `compress_preset` | 28 / `medium` | x264 levers, compression track |
-| `upscale_crf` / `upscale_preset` | 16 / `medium` | x264 levers, upscaling track |
-| `max_concurrent_tasks` | 2 | Past it: 429 `busy` |
-| `max_input_bytes` | 2 GiB | Bigger remote artifact bodies refused (413) before work; deprecated local path uses 422 |
-| `max_output_bytes` | 4 GiB | Output rejected before response streaming if it crosses the auditor-compatible bound |
-| `artifact_ingress_timeout_seconds` | 60 | Server-owned admission→receive/staging/fsync cap; constrained to `(0,300]` |
-| `artifact_hotkey` | `""` | Serving miner ss58; production requires it equal the loaded `chain.validator_hotkey` wallet |
-| `allow_unsigned_artifact_v1` | `false` | Explicit report/test compatibility only; production forbids unsigned v1 |
-| `artifact_request_max_age_seconds` / `artifact_request_future_skew_seconds` | 120 / 5 | Signed-request freshness window and tolerated positive clock skew |
-| `artifact_replay_cache_entries` | 10000 | Bounded live `(validator hotkey, nonce)` replay entries; full cache fails closed |
-| `artifact_replay_cache_entries_per_validator` | 256 | Per-validator live nonce quota; must be no larger than the global cache |
-| `artifact_validator_snapshot_max_age_seconds` | 300 | Oldest metagraph snapshot accepted for current-validator authorization |
-| `task_dir_ttl_seconds` | 900 | Output grace window before the reaper |
-| `api_token` | `null` | Optional controlled-fleet `X-Miner-Token`; do not distribute one shared secret to permissionless subnet participants |
-
-### How scoring works against you — what gets you zeroed
-
-**Submit a real, self-contained video file.** The scorer opens submissions only as
-Matroska/WebM, MP4/MOV-family or IVF, over the local-file protocol only. Anything else —
-playlists and manifests (ffconcat, HLS, DASH), NUT, AVI, MPEG-TS, image sequences, files
-that reference other files — fails to open and the item scores zero.
-
-Scoring engine: [`vidaio/scoring/README.md`](../vidaio/scoring/README.md).
-Validity gates run FIRST and are absolute — any failure forces score 0 with a
-machine-readable reason code recorded in the audit packet:
-
-- **The rate gate** (compression): byte ratio ≥ `0.80` →
-  `COMPRESSION_RATE_TOO_HIGH`. You must shrink by at least 1.25×.
-- **The VMAF floor/threshold** (compression): VMAF against the PRISTINE
-  reference below `threshold − 5` → `VMAF_BELOW_FLOOR`; below the threshold →
-  `VMAF_BELOW_THRESHOLD`. The production default threshold is 90. Note it is
-  measured against the pristine original, not the degraded input you received —
-  a miner that only
-  re-encodes and never restores will honestly zero on heavily degraded draws.
-- **The model-delta gate**: primary VMAF vs the NEG ("no enhancement gain")
-  model delta > 3.0 → `VMAF_MODEL_DELTA_EXCEEDED`. Both anti-gaming model runs use
-  the **miner input** as their reference, so the gate measures what the miner added
-  rather than transformations already present in its challenge payload. The 3.0
-  threshold is a calibrated constant, measured against the real degradation space.
-- **Dedup (two tiers)**: (1) byte-identical outputs across miners (exact verified
-  SHA-256 digest) → `REPLAY_DUPLICATE`; (2) same-content outputs under
-  `canonical_content/3` — identical canonical-stream digest under the same
-  canonicalization plan (the earlier `canonical_content/1` and `/2` rules also matched
-  ≥30 of 32 sampled frame fingerprints within 6 bits AND encoded sizes within 1% or
-  0.2% of the larger file, and rounds finalized under them are verified under them) →
-  `DUPLICATE_CONTENT` (see "Distinct-content inference payouts" above). In the
-  exact-byte tier the single paid winner of a duplicate group is the minimum of the
-  finalized challenge-anchor hash salted with each miner hotkey (`anchor_hash_hotkey/1`);
-  in the same-content tier that minimum is the reference member whose measured score is
-  split equally among all members (`equal_share/1`). Arrival timing, UID and the
-  validator cannot choose the reference; shares and zeros are minted only with the signed
-  receipts, outputs and the content witness available to auditors.
-- **Source proximity** (compression, decided per round, not per item): every measured
-  packet publishes `vmaf_residual` = VMAF(output, pristine) − VMAF(output, input) and
-  `chroma_residual` = PSNR_UV(output, pristine) − PSNR_UV(output, input) (mean per-frame
-  U/V-plane PSNR on the canonical streams). An output whose residuals BOTH sit above the
-  round medians by the fixed margins (+0.25 VMAF and +0.10 dB chroma) while its absolute
-  `vmaf_residual` is positive is closer to the sealed pristine reference than to the
-  input it was served — the signature of an encode made from the pristine — and is
-  zeroed with `SOURCE_PROXIMITY`. The decision needs at least three measured outputs in
-  the round, is relative to the round (clip effects shift everyone), and is minted only
-  with a canonical roster witness (`validator-source-proximity/1`) that auditors
-  re-derive from the archived original packets and the released media. Encoding the
-  served input — however aggressively — keeps both residuals at or below the population.
-- **Non-finite / missing metrics**: fail closed — `METRIC_MISSING` /
-  `METRIC_NON_FINITE`, never a silent pass.
-- **Stream validity**: frame count, duration, dimensions, PTS consistency
-  (`FRAME_COUNT_MISMATCH`, `STREAM_*` codes); upscaling adds per-factor
-  file-size caps (`FILE_SIZE_CAP_EXCEEDED`) and `UNSUPPORTED_SCALE_FACTOR`.
-- **Perceptual-manipulation gates** (tone/grayscale/chroma:
-  `TONE_MANIPULATION`, `COLOR_GRAYSCALE`, `CHROMA_UV_MANIPULATION`): deterministic
-  CPU/OpenCV checks that are required in production and local release testing.
-- Miner-attributable timeout, transport/429, protocol, task-id, output-digest and
-  receipt failures fold an explicit zero only when the authority persists a canonical
-  observation binding its signed artifact-v2 request, finalized anchor, target
-  hotkey/endpoint and deadline. This stops selective non-response from freezing EWMA.
-  The negative network fact remains a validator observation (not a Byzantine proof),
-  but it is immutable and publicly disputable. A miner's authenticated restart fence
-  that consumes the whole signed request deadline is miner-attributable and also folds
-  zero. Validator-side faults—scoring worker, audit store, chain/challenge service, or
-  local input—remain excused.
-
-The upscaling track uses PIQ PieAPP. The release/auditor path runs it on CPU with
-digest-pinned, preloaded weights. Miners are free to run whatever GPU stack their
-approach needs; the launch scorer and every auditor remain CPU-only. CUDA scorer
-mode is development-only
-until a fresh Modal scorer proves exact CPU packet parity and the production guard is
-changed under a versioned release.
-
-### Reading your scores
-
-Your weight share IS your standing after EWMA + rank curve — on mainnet, read
-it straight from the metagraph (`btcli`, or any metagraph explorer). Per-round
-detail (gate failures with reason codes, VMAF/rate numbers) is in the
-validators' structured JSON logs and in the archived ItemScore packets, which
-any third party can open and recompute from the audit store
-([`vidaio/audit/README.md`](../vidaio/audit/README.md)).
-
----
-
-## How to beat the reference miner honestly
-
-The reference miner is a floor, not a bar: it re-encodes (CRF, in whichever of
-h264/hevc/av1/vp9 the task asks for — x264 when it asks for nothing) and does
-not restore. Measured on the dev content, its binding constraint is VMAF
-against the pristine reference — it wins only the draws whose degradation a
-re-encode can survive. Beat it by:
-
-- **Better encoding**: smarter codec/preset/CRF choices per content, two-pass
-  or content-adaptive rate control, better codecs where the encoding gate
-  allows — every byte saved under the rate gate converts to score
-  (`comp = 1 − rate`, weighted 0.7 in the compression formula).
-- **Actual restoration**: deblur, denoise, tone/exposure correction, artifact
-  repair before re-encoding. The challenge DAG degrades footage the way real
-  pipelines do (capture → edit → delivery,
-  [`vidaio/challenge/README.md`](../vidaio/challenge/README.md)); a miner that
-  genuinely inverts those operators clears VMAF draws the reference miner
-  honestly zeros on. This is the whole point of the subnet.
-- **Capacity + reliability**: no timeouts, no 429s at your typical load, exact
-  digests — absent rounds decay your EWMA.
-
-What the gates make pointless:
-
-- **Metric gaming** — sharpening/contrast tricks that inflate default VMAF are
-  precisely what the NEG-model delta gate hunts; tone/color/chroma manipulation
-  has dedicated deterministic CPU gates.
-- **Replay/collusion** — cross-miner dedup zeroes copies; the task id is
-  validator-authored and bound; the scored bytes are digest-pinned; the PieAPP
-  sample frame derives from `sha256(content_digest || challenge_id)` — nothing
-  is predictable before dispatch.
-- **Enhancement shortcuts on upscaling** — file-size caps and the pass/fail
-  VMAF gate bound the space; PieAPP quality is what scores.
-- **Seed/DAG probing** — challenge parameters are private, committed
-  (commit-reveal) BEFORE dispatch, and dispatch payloads are structurally
-  leak-probed.
-
-**The integrity invariant**: every score is an exact, archived ItemScore packet —
-metrics, gate outcomes, canonicalization plan digest, scorer identity — and each
-epoch's weight vector is derived from an immutable **epoch log** that merkle-commits
-to those packets (root + per-item inclusion proofs) and is **anchored on chain**.
-Any third party can recompute any score from the audit store
-([`vidaio/audit/README.md`](../vidaio/audit/README.md)), and the validators
-themselves do exactly that as **auditors**: each independently recomputes a sample
-over the real engine, RE-FOLDS the earning state, re-derives the weight vector, and
-POSTs a signed verdict to the **Audit Results API**
-([`vidaio/auditor/README.md`](../vidaio/auditor/README.md),
-[`vidaio/audit_api/README.md`](../vidaio/audit_api/README.md)). A substituted score
-is `SCORE_MISMATCH`, a substituted weight is `WEIGHT_DERIVATION_MISMATCH`, a
-substituted earning state is `EARNING_STATE_MISMATCH`, and a caught substitution
-surfaces publicly as a **DISPUTED** epoch. There is no substitution path in this
-codebase, for you or against you; and the central scorer cannot cherry-pick
-corruptions after seeing your output, because the challenge commitment binds seed +
-DAG + asset + scorer before dispatch and the sampling is seeded by the finalized
-hash of the fixed future block `close_block + K`, which it cannot predict while
-building and anchoring the log.
-
----
-
-## Mainnet
-
-The subnet is LIVE on mainnet **netuid 85** — register and mine today.
-`chain.mode: bittensor` is the production default and constructs the real
-`BittensorChainAdapter` (lazily importing the optional `.[chain]` bittensor deps —
-a missing dep fails fast with `NotConfiguredError` pointing at the extra). The
-real-chain path was exercised end to end on live testnet before launch — the
-substrate/archive path, both inference tracks, and both earning competition
-tracks. What follows is the miner-side operating contract.
-
-- **Registration is standard btcli, operator-side**: `btcli subnet register`
-  with your hotkey on netuid 85 (`core.netuid`) — no code path registers for
-  you, and coldkeys are never touched at runtime.
-- **Run the public miner least-privileged** from the release image with only its
-  miner configuration, its own hotkey-only wallet, and media runtime; it does not need a
-  validator wallet or S3 secrets:
-
-  ```sh
-  python scripts/service_entrypoint.py reference-miner
-  ```
-
-  Set `miner.artifact_hotkey` equal to this role's `chain.validator_hotkey` and loaded
-  miner wallet. Keep `miner.allow_unsigned_artifact_v1: false` and
-  `miner.enable_legacy_path_routes: false`; production rejects both compatibility
-  opt-ins. Put permissionless endpoints behind the hardened edge described above.
-- **Advertise the HTTP(S) endpoint after registration and startup.** Configure
-  the same miner-specific `chain.validator_hotkey`/wallet environment used by the
-  serving process, then publish and verify its globally routable literal address with
-  the helper:
-
-  ```sh
-  python scripts/advertise_miner.py --config config/default.yaml \
-    --external-ip <GLOBAL_IP> --external-port 8300 --external-scheme https
-  ```
-
-  This submits the Bittensor `serve_axon` extrinsic only for metagraph discovery;
-  the miner continues serving the streamed HTTP(S) protocol, not a Synapse/Axon
-  application server. Axon data carries no scheme, so the argument must match every
-  validator's `miner_url_scheme` — on mainnet that is `https`, verified against a
-  publicly trusted certificate for the literal IP. A port that still speaks plain
-  HTTP (a common leftover from the legacy axon) is skipped every round with
-  `warrant probe failed` and earns nothing. The helper waits for finalization and
-  exact IP/port readback.
-- **Endpoint discovery**: the adapter reads the metagraph axon IP and port. Production
-  dials only globally routable literal IPs; unspecified addresses are not dialed (and are
-  separately exempt from reward IP dedup). The real axon port is preserved/preferred,
-  with `validator.miner_port` only a fallback. Validate serving and reachability
-  before you expect scored rounds.
-- **Same signed wire contract**: artifact-v2 `POST /v1/task/artifact` + `GET /warrant`.
-  A controlled reference fleet may additionally set `miner.api_token`; permissionless
-  miners leave the global shared token unset and use hotkey auth plus the hardened public
-  edge described above. No validator/miner shared filesystem is required.
-- **Deregistration/churn**: the designed reconciliation keys earnings by
-  hotkey, resolves hotkey→uid fresh at weight time; a hotkey swap purges your
-  EWMA history (you restart as a new miner).
-
-The same code path serves testnet and mainnet — only the `chain.*` endpoint and
-netuid differ — so you can rehearse your full setup (registration, advertisement,
-serving, scored rounds) on testnet before registering the mainnet hotkey.
+The score that ranks and is paid is the final score:
+the plain mean of your clip scores, multiplied by `(1 - speed_weight + speed_weight x
+speed_score)` when the manifest's `result_rules` carry a speed term ([Speed](#speed)).
+The crown and podium bars apply to that number. After the result the public
+competition view and the hub show the results table: final score, quality (the mean
+clip score), speed score, total run time, and how many clips failed with which failure
+code (counts, not which clips). When
+the competition completes, the evidence bucket receives every hidden input
+(`challenge_input/<aa>/<bb>/<sha256>`), every scored output (`miner_output/...`) and, for
+upscaling, removal and frame interpolation, the sealed originals
+(`released/reference_original/...`); for compression the input you received is itself the
+reference. A CROWN also publishes the winning entry's source archive, the exact tree the
+evaluator archived (`released/submission_archive/<aa>/<bb>/<sha256>`). No other entry's
+source is published, and a PODIUM result publishes none.
